@@ -1,0 +1,5 @@
+diffusers
+accelerate
+torch
+torchvision
+wandb
