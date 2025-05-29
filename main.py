@@ -1,3 +1,5 @@
+import os
+from safetensors.torch import save_file as safetensors_save_file
 import argparse
 from accelerate import Accelerator
 import torch
@@ -41,10 +43,12 @@ class FluxFillDataset(Dataset):
         # Load image
         img_path = os.path.join(self.images_dir, f"{id_}.png")
         image = Image.open(img_path).convert('RGB')
+        image = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0  # (C, H, W), float32
 
         # Load mask
         mask_path = os.path.join(self.masks_dir, f"{id_}.png")
         mask = Image.open(mask_path).convert('L')
+        mask = torch.from_numpy(np.array(mask)).unsqueeze(0).float() / 255.0  # (1, H, W), float32
 
         # Load prompt
         prompt_path = os.path.join(self.prompts_dir, f"{id_}.txt")
@@ -60,21 +64,24 @@ class DummyModel(torch.nn.Module):
     def forward(self, x):
         return self.linear(x)
     
-def validate(model, val_dataloader, accelerator, epoch=None):
-    model.eval()
+def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
+    if not accelerator.is_main_process:
+        return
+    transformer.eval()
     val_losses = []
     with torch.no_grad():
-        for x_val, y_val in val_dataloader:
-            outputs = model(x_val)
-            val_loss = torch.nn.functional.mse_loss(outputs.squeeze(), y_val.float())
-            val_losses.append(val_loss.item())
-    avg_val_loss = sum(val_losses) / len(val_losses)
+        for images, masks, prompts in val_dataloader:
+            # Use the same training_step for validation, but do not backprop
+            loss = training_step(transformer, pipeline, images, masks, prompts, accelerator.device)
+            if loss is not None:
+                val_losses.append(loss.item())
+    avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('nan')
     log_dict = {"val_loss": avg_val_loss}
     if epoch is not None:
         log_dict["epoch"] = epoch
     wandb.log(log_dict)
     accelerator.print(f"Validation{' at epoch ' + str(epoch) if epoch is not None else ''}: avg val loss = {avg_val_loss:.4f}")
-    model.train()
+    transformer.train()
 
 def load_flux_fill():
     repo_id = "black-forest-labs/FLUX.1-Fill-dev"
@@ -151,6 +158,14 @@ def retrieve_timesteps(
         scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
         timesteps = scheduler.timesteps
     return timesteps, num_inference_steps
+
+# Save a checkpoint of the transformer model using safetensors
+def save_checkpoint(transformer, epoch, checkpoint_dir="checkpoints"):
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.safetensors")
+    # Save only the transformer weights
+    safetensors_save_file(transformer.state_dict(), checkpoint_path)
+    return checkpoint_path
 
 def prepare_latents_and_noise(
     pipeline,
@@ -346,25 +361,31 @@ def main():
 
     transformer.train()
     for epoch in range(args.epochs):
+        optimizer.zero_grad()
         for step, batch in enumerate(dataloader):
             images, masks, prompts = batch
-            optimizer.zero_grad()
-            # TODO: Add diffusion training logic here, including noise addition, timestep sampling, and forward pass
-            # Example placeholder loss:
-            loss = torch.tensor(0.0, device=images.device, requires_grad=True)
-            accelerator.backward(loss)
-            optimizer.step()
-            # Log loss to wandb
-            wandb.log({"loss": loss.item(), "epoch": epoch, "step": step})
-            if step % 10 == 0:
+            # Use the modular training_step function for per-batch training logic
+            with accelerator.accumulate(transformer):
+                loss = training_step(transformer, pipeline, images, masks, prompts, accelerator.device)
+                if loss is None:
+                    raise RuntimeError("training_step returned None. Check implementation.")
+                accelerator.backward(loss)
+                # Only step optimizer and zero grad when gradients are synced (i.e., after accumulation)
+                if accelerator.sync_gradients:
+                    optimizer.step()
+                    optimizer.zero_grad()
+            # Log loss to wandb (log only on main process and after accumulation step)
+            if accelerator.is_main_process and accelerator.sync_gradients:
+                wandb.log({"loss": loss.item(), "epoch": epoch, "step": step})
+            if step % 10 == 0 and accelerator.is_main_process:
                 accelerator.print(f"Epoch {epoch} Step {step} Loss: {loss.item():.4f}")
 
         # Validation logic
         if (epoch + 1) % args.validation_epochs == 0:
-            validate(transformer, val_dataloader, accelerator, epoch=epoch)
+            validate(transformer, val_dataloader, accelerator, pipeline, epoch=epoch)
 
     # Final validation at the end
-    validate(transformer, val_dataloader, accelerator)
+    validate(transformer, val_dataloader, accelerator, pipeline)
     wandb.finish()
 
 if __name__ == "__main__":
