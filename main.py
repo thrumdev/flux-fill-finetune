@@ -16,7 +16,7 @@ def get_parser():
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--wandb_name', type=str, default='dummy-run', help='wandb run name')
     parser.add_argument('--validation_epochs', type=int, default=1, help='How often (in epochs) to run validation')
-    parser.add_argument('--save-epochs', type=int, default=1, help='How many epochs between checkpoints (default: 1)')
+    parser.add_argument('--save-epochs', type=int, default=1, help='How many epochs between checkpoints (default: 1). 0 indicates no intermediate saves')
     return parser
 
 
@@ -395,9 +395,9 @@ def main():
         if (epoch + 1) % args.validation_epochs == 0:
             validate(transformer, val_dataloader, accelerator, pipeline, epoch=epoch)
 
-        # Checkpoint saving logic (avoid duplicate save at end)
+        # Checkpoint saving logic (avoid duplicate save at end, and allow save_epochs==0 to mean 'never except end')
         is_last_epoch = (epoch + 1) == args.epochs
-        if (epoch + 1) % args.save_epochs == 0 and not is_last_epoch and accelerator.is_main_process:
+        if args.save_epochs > 0 and (epoch + 1) % args.save_epochs == 0 and not is_last_epoch and accelerator.is_main_process:
             save_checkpoint(transformer, optimizer, epoch + 1)
 
     # Final validation at the end
