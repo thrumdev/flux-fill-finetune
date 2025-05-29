@@ -368,6 +368,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         1,
     )
     loss = loss.mean()
+    return loss
 
 def main():
     parser = get_parser()
@@ -394,7 +395,6 @@ def main():
 
     transformer.train()
     for epoch in range(args.epochs):
-        optimizer.zero_grad()
         for step, batch in enumerate(dataloader):
             images, masks, prompts = batch
             # Use the modular training_step function for per-batch training logic
