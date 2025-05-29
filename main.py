@@ -1,5 +1,4 @@
 import os
-from safetensors.torch import save_file as safetensors_save_file
 import argparse
 from accelerate import Accelerator
 import torch
@@ -160,13 +159,24 @@ def retrieve_timesteps(
         timesteps = scheduler.timesteps
     return timesteps, num_inference_steps
 
-# Save a checkpoint of the transformer model using safetensors
-def save_checkpoint(transformer, epoch, checkpoint_dir="checkpoints"):
+# Save a full checkpoint for resuming training (model, optimizer, epoch)
+def save_checkpoint(transformer, optimizer, epoch, checkpoint_dir="checkpoints"):
     os.makedirs(checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.safetensors")
-    # Save only the transformer weights
-    safetensors_save_file(transformer.state_dict(), checkpoint_path)
+    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
+    torch.save({
+        "transformer": transformer.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+    }, checkpoint_path)
     return checkpoint_path
+
+# Load a full checkpoint for resuming training
+def load_checkpoint(transformer, optimizer, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    transformer.load_state_dict(checkpoint["transformer"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    start_epoch = checkpoint["epoch"]
+    return start_epoch
 
 def prepare_latents_and_noise(
     pipeline,
@@ -388,13 +398,13 @@ def main():
         # Checkpoint saving logic (avoid duplicate save at end)
         is_last_epoch = (epoch + 1) == args.epochs
         if (epoch + 1) % args.save_epochs == 0 and not is_last_epoch and accelerator.is_main_process:
-            save_checkpoint(transformer, epoch + 1)
+            save_checkpoint(transformer, optimizer, epoch + 1)
 
     # Final validation at the end
     validate(transformer, val_dataloader, accelerator, pipeline)
     # Always save a final checkpoint at the end
     if accelerator.is_main_process:
-        save_checkpoint(transformer, args.epochs)
+        save_checkpoint(transformer, optimizer, args.epochs)
     wandb.finish()
 
 if __name__ == "__main__":
