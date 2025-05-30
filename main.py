@@ -392,6 +392,17 @@ def collate_fn(batch):
     prompts = list(prompts)  # Ensures prompts is a list of strings
     return images, masks, prompts
 
+def register_hooks(model):
+    def check_dtype_hook(name):
+        def hook(_, __, output):
+            if isinstance(output, torch.Tensor) and output.dtype != torch.bfloat16:
+                print(f"[dtype mismatch] {name}: {output.shape} {output.dtype}")
+        return hook
+
+    for name, module in model.named_modules():
+        module.register_forward_hook(check_dtype_hook(name))
+
+
 def main():
     parser = get_parser()
     args = parser.parse_args()
@@ -475,6 +486,10 @@ def main():
 
     optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr)
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
+
+    # DEBUG: register hoooks to check for dtype mismatches
+    if accelerator.is_main_process:
+        register_hooks(transformer)
 
     transformer.train()
     for epoch in range(args.epochs):
