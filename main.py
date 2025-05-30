@@ -424,7 +424,6 @@ def main():
             transformer.gradient_checkpointing_enable()
         else:
             print("Warning: transformer does not support gradient checkpointing.")
-    optimizer = torch.optim.Adam(transformer.parameters(), lr=args.lr)
 
     dataset = FluxFillDataset(os.path.join('data', 'training'))
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, collate_fn=collate_fn)
@@ -433,7 +432,10 @@ def main():
     val_dataset = FluxFillDataset(os.path.join('data', 'validation'))
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, collate_fn=collate_fn)
 
-    transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
+    transformer = accelerator.prepare(transformer)
+    optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr)
+    optimizer = accelerator.prepare(optimizer)
+    dataloader = accelerator.prepare(dataloader)
 
     transformer.train()
     for epoch in range(args.epochs):
