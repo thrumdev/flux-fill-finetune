@@ -335,7 +335,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     guidance_scale = 30.0
 
     # 5. handle guidance
-    if pipeline.transformer.config.guidance_embeds:
+    if pipeline.guidance_embeds:
         guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
         guidance = guidance.expand(latents.shape[0])
     else:
@@ -430,6 +430,7 @@ def main():
 
     # Only train the transformer component
     transformer = pipeline.transformer
+    pipeline.guidance_embeds = transformer.config.guidance_embeds
     # Take the transformer out of the pipeline for training and then send everything else to
     # the accelerator device.
     pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
