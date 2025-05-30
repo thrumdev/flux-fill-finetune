@@ -389,7 +389,11 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
 def collate_fn(batch):
     images, masks, prompts = zip(*batch)
     images = torch.stack(images)
+    # Ensure masks are single channel: (B, 1, H, W)
+    # If mask has more than 1 channel, take only the first channel
     masks = torch.stack(masks)
+    if masks.ndim == 4 and masks.shape[1] > 1:
+        masks = masks[:, :1, ...]
     prompts = list(prompts)  # Ensures prompts is a list of strings
     return images, masks, prompts
 
