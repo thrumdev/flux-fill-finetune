@@ -243,6 +243,20 @@ def prepare_latents_and_target(
     latents = pipeline._pack_latents(latents, batch_size, num_channels_latents, height, width)
     return latents, latent_image_ids, target
 
+def offload_pipeline_heavy(pipeline):
+    """
+    Offload heavy pipeline modules (e.g., text_encoder_2 - t5) to CPU to save GPU memory.
+    """
+    if hasattr(pipeline, "text_encoder_2") and pipeline.text_encoder_2 is not None:
+        pipeline.text_encoder_2.to("cpu")
+
+def load_pipeline_heavy(pipeline, device):
+    """
+    Load heavy pipeline modules (e.g., text_encoder_2 - t5) to the specified device.
+    """
+    if hasattr(pipeline, "text_encoder_2") and pipeline.text_encoder_2 is not None:
+        pipeline.text_encoder_2.to(device)
+
 # Runs a training step. returns the loss.
 def training_step(transformer, pipeline, init_image, mask_image, prompt, device):
     """
@@ -285,7 +299,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     )
     timesteps, num_inference_steps = pipeline.get_timesteps(num_inference_steps, 1.0, device)
 
-    # 2. Encode prompts
+    # 2. Encode prompts, then offload heavy pipeline modules to CPU to save memory
     (
         prompt_embeds,
         pooled_prompt_embeds,
@@ -301,8 +315,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         lora_scale=None,
     )
 
-    prompt_embeds.to(dtype=transformer.dtype)
-    pooled_prompt_embeds.to(dtype=transformer.dtype)
+    prompt_embeds = prompt_embeds.to(dtype=transformer.dtype)
+    pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=transformer.dtype)
 
     # 3. Prepare latents
     num_channels_latents = pipeline.vae.config.latent_channels
@@ -353,6 +367,10 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     # 6. Forward pass through the transformer
     t = torch.randint(0, len(timesteps), (1,), device=device)
     timestep = t.expand(latents.shape[0]).to(latents.dtype)
+
+    # Offload heavy pipeline modules to CPU to save memory
+    # This is important to avoid OOM errors during training.
+    offload_pipeline_heavy(pipeline)
 
     print("before transformer forward pass:")
     noise_pred = transformer(
