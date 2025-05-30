@@ -7,6 +7,10 @@ from torch.utils.data import DataLoader, Dataset
 import wandb
 import numpy as np
 import inspect
+import random
+
+import os
+from PIL import Image
 
 from diffusers import FluxFillPipeline
 
@@ -19,11 +23,8 @@ def get_parser():
     parser.add_argument('--wandb_project', type=str, required=True, help='wandb project name (umbrella for runs)')
     parser.add_argument('--validation_epochs', type=int, default=1, help='How often (in epochs) to run validation')
     parser.add_argument('--save-epochs', type=int, default=1, help='How many epochs between checkpoints (default: 1). 0 indicates no intermediate saves')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed (optional, if not set a random one will be generated)')
     return parser
-
-
-import os
-from PIL import Image
 
 
 class FluxFillDataset(Dataset):
@@ -58,13 +59,6 @@ class FluxFillDataset(Dataset):
             prompt = f.read().strip()
 
         return image, mask, prompt
-
-class DummyModel(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.linear = torch.nn.Linear(10, 1)
-    def forward(self, x):
-        return self.linear(x)
     
 def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
     if not accelerator.is_main_process:
@@ -375,8 +369,37 @@ def main():
     parser = get_parser()
     args = parser.parse_args()
 
-    # Initialize Weights & Biases
-    wandb.init(project=args.wandb_project, name=args.wandb_name, config={"epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr})
+    # Set or generate random seed
+    if args.seed is not None:
+        seed = args.seed
+    else:
+        seed = int(torch.randint(0, 2**31 - 1, (1,)).item())
+    print(f"Using random seed: {seed}")
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    # DataLoader drop_last explanation:
+    # drop_last=True will drop the last batch if it's smaller than batch_size. This is useful if your model or pipeline requires fixed batch sizes.
+    # drop_last=False (default) will include the last batch even if it's smaller. This is usually fine for most training, but can cause issues if your model expects fixed batch sizes.
+    # You can set drop_last=True below if needed.
+
+    # Initialize Weights & Biases with additional config
+    wandb.init(
+        project=args.wandb_project,
+        name=args.wandb_name,
+        config={
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "lr": args.lr,
+            "validation_epochs": args.validation_epochs,
+            "save_epochs": args.save_epochs,
+            "seed": seed,
+            "drop_last": False,  # default, see above
+        }
+    )
 
     accelerator = Accelerator()
     pipeline = load_flux_fill()
@@ -386,11 +409,11 @@ def main():
     optimizer = torch.optim.Adam(transformer.parameters(), lr=args.lr)
 
     dataset = FluxFillDataset(os.path.join('data', 'training'))
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
 
     # Validation dataset and dataloader
     val_dataset = FluxFillDataset(os.path.join('data', 'validation'))
-    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False)
 
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
 
