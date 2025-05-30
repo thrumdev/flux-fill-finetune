@@ -254,6 +254,12 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     batch_size = init_image.shape[0]
     height, width = init_image.shape[2], init_image.shape[3]
 
+    pipeline = pipeline.to(device)
+    transformer = transformer.to(device)
+
+    init_image = init_image.to(device)
+    mask_image = mask_image.to(device)
+    
     init_image = pipeline.image_processor.preprocess(init_image, height=height, width=width)
     init_image = init_image
     
