@@ -70,33 +70,12 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
         return
     transformer.eval()
     val_losses = []
-    images_logged = False
     with torch.no_grad():
         for images, masks, prompts in val_dataloader:
             # Use the same training_step for validation, but do not backprop
             loss = training_step(transformer, pipeline, images, masks, prompts, accelerator.device)
             if loss is not None:
                 val_losses.append(loss.item())
-            # Log images for the first batch only
-            if not images_logged:
-                # Generate output images using the pipeline
-                output_images = pipeline(
-                    image=images.to(accelerator.device),
-                    mask_image=masks.to(accelerator.device),
-                    prompt=list(prompts),
-                    num_inference_steps=30,
-                ).images  # List of PIL Images
-
-                # Convert tensors to PIL for logging
-                input_images = [torchvision.transforms.ToPILImage()(img.cpu()) for img in images]
-                mask_images = [torchvision.transforms.ToPILImage()(mask[0].cpu()) for mask in masks]
-
-                # Log as a wandb table
-                columns = ["input", "mask", "output", "prompt"]
-                data = list(zip(input_images, mask_images, output_images, prompts))
-                table = wandb.Table(columns=columns, data=data)
-                wandb.log({"val_samples": table, "epoch": epoch if epoch is not None else 0})
-                images_logged = True
     avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('nan')
     log_dict = {"val_loss": avg_val_loss}
     if epoch is not None:
