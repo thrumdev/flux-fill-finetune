@@ -271,108 +271,109 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         loss: torch.Tensor
     """
 
-    batch_size = init_image.shape[0]
-    height, width = init_image.shape[2], init_image.shape[3]
+    # disable gradient tracking for preparing inputs.
+    with torch.no_grad():
+        batch_size = init_image.shape[0]
+        height, width = init_image.shape[2], init_image.shape[3]
 
-    init_image = init_image.to(device, dtype=transformer.dtype)
-    mask_image = mask_image.to(device, dtype=transformer.dtype)
+        init_image = init_image.to(device, dtype=transformer.dtype)
+        mask_image = mask_image.to(device, dtype=transformer.dtype)
 
-    init_image = pipeline.image_processor.preprocess(init_image, height=height, width=width)
-    
-    # 1. Choose a random timestep for the entire batch.
-    num_inference_steps = torch.randint(20, 50, (1,)).item();
-    sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
-    image_seq_len = (int(height) // pipeline.vae_scale_factor // 2) * (int(width) // pipeline.vae_scale_factor // 2)
-    mu = calculate_shift(
-        image_seq_len,
-        pipeline.scheduler.config.get("base_image_seq_len", 256),
-        pipeline.scheduler.config.get("max_image_seq_len", 4096),
-        pipeline.scheduler.config.get("base_shift", 0.5),
-        pipeline.scheduler.config.get("max_shift", 1.15),
-    )
-    timesteps, num_inference_steps = retrieve_timesteps(
-        pipeline.scheduler,
-        num_inference_steps,
-        device,
-        sigmas=sigmas,
-        mu=mu,
-    )
-    timesteps, num_inference_steps = pipeline.get_timesteps(num_inference_steps, 1.0, device)
+        init_image = pipeline.image_processor.preprocess(init_image, height=height, width=width)
+        
+        # 1. Choose a random timestep for the entire batch.
+        num_inference_steps = torch.randint(20, 50, (1,)).item();
+        sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+        image_seq_len = (int(height) // pipeline.vae_scale_factor // 2) * (int(width) // pipeline.vae_scale_factor // 2)
+        mu = calculate_shift(
+            image_seq_len,
+            pipeline.scheduler.config.get("base_image_seq_len", 256),
+            pipeline.scheduler.config.get("max_image_seq_len", 4096),
+            pipeline.scheduler.config.get("base_shift", 0.5),
+            pipeline.scheduler.config.get("max_shift", 1.15),
+        )
+        timesteps, num_inference_steps = retrieve_timesteps(
+            pipeline.scheduler,
+            num_inference_steps,
+            device,
+            sigmas=sigmas,
+            mu=mu,
+        )
+        timesteps, num_inference_steps = pipeline.get_timesteps(num_inference_steps, 1.0, device)
 
-    # 2. Encode prompts, then offload heavy pipeline modules to CPU to save memory
-    (
-        prompt_embeds,
-        pooled_prompt_embeds,
-        text_ids,
-    ) = pipeline.encode_prompt(
-        prompt=prompt,
-        prompt_2=prompt,
-        prompt_embeds=None,
-        pooled_prompt_embeds=None,
-        device=device,
-        num_images_per_prompt=1,
-        max_sequence_length=512,
-        lora_scale=None,
-    )
+        # 2. Encode prompts, then offload heavy pipeline modules to CPU to save memory
+        (
+            prompt_embeds,
+            pooled_prompt_embeds,
+            text_ids,
+        ) = pipeline.encode_prompt(
+            prompt=prompt,
+            prompt_2=prompt,
+            prompt_embeds=None,
+            pooled_prompt_embeds=None,
+            device=device,
+            num_images_per_prompt=1,
+            max_sequence_length=512,
+            lora_scale=None,
+        )
 
-    prompt_embeds = prompt_embeds.to(dtype=transformer.dtype)
-    pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=transformer.dtype)
+        prompt_embeds = prompt_embeds.to(dtype=transformer.dtype)
+        pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=transformer.dtype)
 
-    # 3. Prepare latents
-    num_channels_latents = pipeline.vae.config.latent_channels
-    latent_timestep = timesteps[:1].repeat(batch_size)
-    latents, latent_image_ids, target = prepare_latents_and_target(
-        pipeline,
-        init_image,
-        latent_timestep,
-        batch_size,
-        num_channels_latents,
-        height,
-        width,
-        prompt_embeds.dtype,
-        device,
-    )
+        # 3. Prepare latents
+        num_channels_latents = pipeline.vae.config.latent_channels
+        latent_timestep = timesteps[:1].repeat(batch_size)
+        latents, latent_image_ids, target = prepare_latents_and_target(
+            pipeline,
+            init_image,
+            latent_timestep,
+            batch_size,
+            num_channels_latents,
+            height,
+            width,
+            prompt_embeds.dtype,
+            device,
+        )
 
-    # 4. Prepare masked latents
-    mask_image = pipeline.mask_processor.preprocess(mask_image, height=height, width=width)
-    mask_image = mask_image
+        # 4. Prepare masked latents
+        mask_image = pipeline.mask_processor.preprocess(mask_image, height=height, width=width)
+        mask_image = mask_image
 
-    masked_image = init_image * (1 - mask_image)
-    masked_image = masked_image.to(device=device, dtype=prompt_embeds.dtype)
+        masked_image = init_image * (1 - mask_image)
+        masked_image = masked_image.to(device=device, dtype=prompt_embeds.dtype)
 
-    height, width = init_image.shape[-2:]
-    mask, masked_image_latents = pipeline.prepare_mask_latents(
-        mask_image,
-        masked_image,
-        batch_size,
-        num_channels_latents,
-        1,
-        height,
-        width,
-        prompt_embeds.dtype,
-        device,
-        generator=None,
-    )
-    masked_image_latents = torch.cat((masked_image_latents, mask), dim=-1)
+        height, width = init_image.shape[-2:]
+        mask, masked_image_latents = pipeline.prepare_mask_latents(
+            mask_image,
+            masked_image,
+            batch_size,
+            num_channels_latents,
+            1,
+            height,
+            width,
+            prompt_embeds.dtype,
+            device,
+            generator=None,
+        )
+        masked_image_latents = torch.cat((masked_image_latents, mask), dim=-1)
 
-    guidance_scale = 30.0
+        guidance_scale = 30.0
 
-    # 5. handle guidance
-    if pipeline.guidance_embeds:
-        guidance = torch.full([1], guidance_scale, device=device, dtype=transformer.dtype)
-        guidance = guidance.expand(latents.shape[0])
-    else:
-        guidance = None
+        # 5. handle guidance
+        if pipeline.guidance_embeds:
+            guidance = torch.full([1], guidance_scale, device=device, dtype=transformer.dtype)
+            guidance = guidance.expand(latents.shape[0])
+        else:
+            guidance = None
 
-    # 6. Forward pass through the transformer
-    t = torch.randint(0, len(timesteps), (1,), device=device)
-    timestep = t.expand(latents.shape[0]).to(latents.dtype)
+        t = torch.randint(0, len(timesteps), (1,), device=device)
+        timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
-    # Offload heavy pipeline modules to CPU to save memory
-    # This is important to avoid OOM errors during training.
-    offload_pipeline_heavy(pipeline)
+        # Offload heavy pipeline modules to CPU to save memory
+        # This is important to avoid OOM errors during training.
+        offload_pipeline_heavy(pipeline)
 
-    print("before transformer forward pass:")
+    # 6. Forward pass through the transformer. Everything from here on will be gradient-tracked.
     noise_pred = transformer(
         hidden_states=torch.cat((latents, masked_image_latents), dim=2),
         timestep=timestep / 1000,
@@ -385,8 +386,6 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         return_dict=False,
     )[0]
 
-    print("after transformer forward pass:")
-
     noise_pred = pipeline._unpack_latents(
         noise_pred,
         height=height,
@@ -396,7 +395,6 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
 
     # 7. Compute loss
     # For simplicity, we use MSE loss here, but you can use any other loss function as needed.
-    print(f"noise_pred shape: {noise_pred.shape}, target shape: {target.shape}")
     loss = torch.mean(
         ((noise_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
         1,
