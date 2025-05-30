@@ -16,6 +16,7 @@ def get_parser():
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--wandb_name', type=str, required=True, help='wandb run name')
+    parser.add_argument('--wandb_project', type=str, required=True, help='wandb project name (umbrella for runs)')
     parser.add_argument('--validation_epochs', type=int, default=1, help='How often (in epochs) to run validation')
     parser.add_argument('--save-epochs', type=int, default=1, help='How many epochs between checkpoints (default: 1). 0 indicates no intermediate saves')
     return parser
@@ -375,7 +376,7 @@ def main():
     args = parser.parse_args()
 
     # Initialize Weights & Biases
-    wandb.init(project="flux-fill-finetuning", name=args.wandb_name, config={"epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr})
+    wandb.init(project=args.wandb_project, name=args.wandb_name, config={"epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr})
 
     accelerator = Accelerator()
     pipeline = load_flux_fill()
