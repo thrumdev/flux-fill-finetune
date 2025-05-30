@@ -419,14 +419,20 @@ def main():
     pipeline = load_flux_fill()
 
     class DummyTransformer(torch.nn.Module):
+        def __init__(self, dtype=torch.float32):
+            super().__init__()
+            self._dtype = dtype
         def forward(self, *args, **kwargs):
             raise RuntimeError("Dummy transformer should not be called.")
+        @property
+        def dtype(self):
+            return self._dtype
 
     # Only train the transformer component
     transformer = pipeline.transformer
     # Take the transformer out of the pipeline for training and then send everything else to
     # the accelerator device.
-    pipeline.transformer = DummyTransformer()
+    pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
     pipeline.to(accelerator.device)
 
     if args.gradient_checkpointing:
