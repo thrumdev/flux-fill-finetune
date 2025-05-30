@@ -215,7 +215,7 @@ def prepare_latents_and_noise(
 
     image = image.to(device=device, dtype=dtype)
     if image.shape[1] != pipeline.latent_channels:
-        image_latents = pipeline._encode_vae_image(image=image)
+        image_latents = pipeline._encode_vae_image(image=image, generator=None)
     else:
         image_latents = image
     if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
