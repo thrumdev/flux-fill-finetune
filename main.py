@@ -198,7 +198,7 @@ def load_checkpoint(transformer, optimizer, checkpoint_path):
     start_epoch = checkpoint["epoch"]
     return start_epoch
 
-def prepare_latents_and_noise(
+def prepare_latents_and_target(
     pipeline,
     image,
     timestep,
@@ -233,9 +233,11 @@ def prepare_latents_and_noise(
         image_latents = torch.cat([image_latents], dim=0)
 
     noise = torch.randn(shape, dtype=dtype, device=device)
+    target = noise - image_latents
+
     latents = pipeline.scheduler.scale_noise(image_latents, timestep, noise)
     latents = pipeline._pack_latents(latents, batch_size, num_channels_latents, height, width)
-    return latents, latent_image_ids, noise
+    return latents, latent_image_ids, target
 
 # Runs a training step. returns the loss.
 def training_step(transformer, pipeline, init_image, mask_image, prompt, device):
@@ -298,7 +300,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     # 3. Prepare latents
     num_channels_latents = pipeline.vae.config.latent_channels
     latent_timestep = timesteps[:1].repeat(batch_size)
-    latents, latent_image_ids, noise = prepare_latents_and_noise(
+    latents, latent_image_ids, target = prepare_latents_and_target(
         pipeline,
         init_image,
         latent_timestep,
@@ -357,13 +359,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         return_dict=False,
     )[0]
 
-    # compute the previous noisy sample x_t -> x_t-1
-    latents_dtype = latents.dtype
-    output_latents = pipeline.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
-
     # 7. Compute loss
     # For simplicity, we use MSE loss here, but you can use any other loss function as needed.
-    target = noise - latents
     loss = torch.mean(
         ((noise_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
         1,
