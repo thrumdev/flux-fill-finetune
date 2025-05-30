@@ -255,7 +255,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     init_image = init_image.to(dtype=torch.float32)
     
     # 1. Choose a random timestep for the entire batch.
-    num_inference_steps = torch.randint(20, 50);
+    num_inference_steps = torch.randint(20, 50, (1,)).item();
     sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
     image_seq_len = (int(height) // pipeline.vae_scale_factor // 2) * (int(width) // pipeline.vae_scale_factor // 2)
     mu = calculate_shift(
