@@ -24,6 +24,7 @@ def get_parser():
     parser.add_argument('--validation_epochs', type=int, default=1, help='How often (in epochs) to run validation')
     parser.add_argument('--save_epochs', type=int, default=1, help='How many epochs between checkpoints (default: 1). 0 indicates no intermediate saves')
     parser.add_argument('--seed', type=int, default=None, help='Random seed (optional, if not set a random one will be generated)')
+    parser.add_argument('--gradient_checkpointing', action='store_true', help='Enable gradient checkpointing for transformer')
     return parser
 
 
@@ -412,10 +413,17 @@ def main():
     )
 
     accelerator = Accelerator()
+
     pipeline = load_flux_fill()
 
     # Only train the transformer component
     transformer = pipeline.transformer
+    if args.gradient_checkpointing:
+        print("Enabling gradient checkpointing for transformer...")
+        if hasattr(transformer, 'gradient_checkpointing_enable'):
+            transformer.gradient_checkpointing_enable()
+        else:
+            print("Warning: transformer does not support gradient checkpointing.")
     optimizer = torch.optim.Adam(transformer.parameters(), lr=args.lr)
 
     dataset = FluxFillDataset(os.path.join('data', 'training'))
