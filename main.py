@@ -365,6 +365,13 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     loss = loss.mean()
     return loss
 
+def collate_fn(batch):
+    images, masks, prompts = zip(*batch)
+    images = torch.stack(images)
+    masks = torch.stack(masks)
+    prompts = list(prompts)  # Ensures prompts is a list of strings
+    return images, masks, prompts
+
 def main():
     parser = get_parser()
     args = parser.parse_args()
@@ -409,11 +416,11 @@ def main():
     optimizer = torch.optim.Adam(transformer.parameters(), lr=args.lr)
 
     dataset = FluxFillDataset(os.path.join('data', 'training'))
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, collate_fn=collate_fn)
 
     # Validation dataset and dataloader
     val_dataset = FluxFillDataset(os.path.join('data', 'validation'))
-    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, collate_fn=collate_fn)
 
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
 
