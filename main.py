@@ -215,7 +215,6 @@ def prepare_latents_and_target(
 
     noise = torch.randn(shape, dtype=dtype, device=device)
 
-    print(f"noise shape: {noise.shape}, image_latents shape: {image_latents.shape}")
     target = noise - image_latents
 
     latents = pipeline.scheduler.scale_noise(image_latents, timestep, noise)
@@ -497,10 +496,16 @@ def main():
             images, masks, prompts = batch
             # Use the modular training_step function for per-batch training logic
             with accelerator.accumulate(transformer):
+                if accelerator.is_main_process:
+                    print("forward")
                 with accelerator.autocast():
                     loss = training_step(transformer, pipeline, images, masks, prompts, accelerator.device)
                 if loss is None:
                     raise RuntimeError("training_step returned None. Check implementation.")
+                
+                if accelerator.is_main_process:
+                    print("backward")
+
                 accelerator.backward(loss)
                 # Only step optimizer and zero grad when gradients are synced (i.e., after accumulation)
                 if accelerator.sync_gradients:
