@@ -4,6 +4,8 @@ from accelerate import Accelerator
 import torch
 import torchvision
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.checkpoint import checkpoint as orig_checkpoint
+
 import wandb
 import numpy as np
 import inspect
@@ -428,6 +430,15 @@ def main():
     )
 
     accelerator = Accelerator()
+
+    # hail mary: override the default checkpoint function to use autocast.
+    # somehow the gradient/activation checkpointing in the FluxFillPipeline
+    # does not work with the default torch.utils.checkpoint.checkpoint and gets the wrong dtype.
+    def patched_checkpoint(function, *args, **kwargs):
+        with accelerator.autocast():
+            return orig_checkpoint(function, *args, **kwargs)
+
+    torch.utils.checkpoint.checkpoint = patched_checkpoint
 
     pipeline = load_flux_fill()
 
