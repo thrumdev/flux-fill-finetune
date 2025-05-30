@@ -233,6 +233,8 @@ def prepare_latents_and_target(
         image_latents = torch.cat([image_latents], dim=0)
 
     noise = torch.randn(shape, dtype=dtype, device=device)
+
+    print(f"noise shape: {noise.shape}, image_latents shape: {image_latents.shape}")
     target = noise - image_latents
 
     latents = pipeline.scheduler.scale_noise(image_latents, timestep, noise)
@@ -359,8 +361,16 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         return_dict=False,
     )[0]
 
+    noise_pred = pipeline._unpack_latents(
+        noise_pred,
+        height=height,
+        width=width,
+        vae_scale_factor=pipeline.vae_scale_factor,
+    )
+
     # 7. Compute loss
     # For simplicity, we use MSE loss here, but you can use any other loss function as needed.
+    print(f"noise_pred shape: {noise_pred.shape}, target shape: {target.shape}")
     loss = torch.mean(
         ((noise_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
         1,
