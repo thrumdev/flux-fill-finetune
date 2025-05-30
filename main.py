@@ -450,15 +450,6 @@ def main():
     optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr)
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
 
-    for name, buf in transformer.named_buffers():
-        print(name, buf.shape, buf.dtype, buf.device)
-
-    for name, module in transformer.named_modules():
-        if not isinstance(module, torch.distributed.fsdp.FullyShardedDataParallel):
-            print(f"Unwrapped: {name} ({type(module)})")
-        else: 
-            print(f"Wrapped: {name} ({type(module)})")
-
     transformer.train()
     for epoch in range(args.epochs):
         for step, batch in enumerate(dataloader):
