@@ -254,14 +254,10 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     batch_size = init_image.shape[0]
     height, width = init_image.shape[2], init_image.shape[3]
 
-    pipeline = pipeline.to(device)
-    transformer = transformer.to(device)
-
     init_image = init_image.to(device)
     mask_image = mask_image.to(device)
-    
+
     init_image = pipeline.image_processor.preprocess(init_image, height=height, width=width)
-    init_image = init_image
     
     # 1. Choose a random timestep for the entire batch.
     num_inference_steps = torch.randint(20, 50, (1,)).item();
@@ -422,8 +418,17 @@ def main():
 
     pipeline = load_flux_fill()
 
+    class DummyTransformer(torch.nn.Module):
+        def forward(self, *args, **kwargs):
+            raise RuntimeError("Dummy transformer should not be called.")
+
     # Only train the transformer component
     transformer = pipeline.transformer
+    # Take the transformer out of the pipeline for training and then send everything else to
+    # the accelerator device.
+    pipeline.transformer = DummyTransformer()
+    pipeline.to(accelerator.device)
+
     if args.gradient_checkpointing:
         print("Enabling gradient checkpointing for transformer...")
         if hasattr(transformer, 'gradient_checkpointing_enable'):
@@ -440,6 +445,7 @@ def main():
 
     optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr)
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
+
 
     transformer.train()
     for epoch in range(args.epochs):
