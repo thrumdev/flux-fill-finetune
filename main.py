@@ -22,7 +22,7 @@ def get_parser():
     parser.add_argument('--wandb_name', type=str, required=True, help='wandb run name')
     parser.add_argument('--wandb_project', type=str, required=True, help='wandb project name (umbrella for runs)')
     parser.add_argument('--validation_epochs', type=int, default=1, help='How often (in epochs) to run validation')
-    parser.add_argument('--save-epochs', type=int, default=1, help='How many epochs between checkpoints (default: 1). 0 indicates no intermediate saves')
+    parser.add_argument('--save_epochs', type=int, default=1, help='How many epochs between checkpoints (default: 1). 0 indicates no intermediate saves')
     parser.add_argument('--seed', type=int, default=None, help='Random seed (optional, if not set a random one will be generated)')
     return parser
 

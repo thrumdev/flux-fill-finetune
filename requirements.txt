@@ -3,3 +3,5 @@ accelerate
 torch
 torchvision
 wandb
+transformers
+numpy
