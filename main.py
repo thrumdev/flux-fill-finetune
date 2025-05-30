@@ -349,6 +349,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     t = torch.randint(0, len(timesteps), (1,), device=device)
     timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
+    print("before transformer forward pass:")
+    print_transformer_dtypes(transformer)
     noise_pred = transformer(
         hidden_states=torch.cat((latents, masked_image_latents), dim=2),
         timestep=timestep / 1000,
@@ -360,6 +362,9 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         joint_attention_kwargs=None,
         return_dict=False,
     )[0]
+
+    print("after transformer forward pass:")
+    print_transformer_dtypes(transformer)
 
     noise_pred = pipeline._unpack_latents(
         noise_pred,
@@ -384,6 +389,13 @@ def collate_fn(batch):
     masks = torch.stack(masks)
     prompts = list(prompts)  # Ensures prompts is a list of strings
     return images, masks, prompts
+
+def print_transformer_dtypes(transformer):
+    # Print dtypes of all transformer parameters for verification
+    print("[bf16 debug] Transformer parameter dtypes:")
+    for n, p in transformer.named_parameters():
+        if p.dtype != torch.bfloat16:
+            print(f"Warning: Parameter {n} is not bf16, it is {p.dtype}. This may cause issues with bf16 training.")
 
 def main():
     parser = get_parser()
@@ -459,6 +471,8 @@ def main():
 
     optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr)
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
+
+    print_transformer_dtypes(transformer)
 
     transformer.train()
     for epoch in range(args.epochs):
