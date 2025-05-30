@@ -48,13 +48,13 @@ class FluxFillDataset(Dataset):
         img_path = os.path.join(self.images_dir, f"{id_}.png")
         image = Image.open(img_path).convert('RGB')
         image = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0  # (C, H, W), float32
-        image = image.to(dtype=torch.bfloat16)  # Ensure bfloat16
+        image = image 
 
         # Load mask
         mask_path = os.path.join(self.masks_dir, f"{id_}.png")
         mask = Image.open(mask_path).convert('L')
         mask = torch.from_numpy(np.array(mask)).unsqueeze(0).float() / 255.0  # (1, H, W), float32
-        mask = mask.to(dtype=torch.bfloat16)  # Ensure bfloat16
+        mask = mask
 
         # Load prompt
         prompt_path = os.path.join(self.prompts_dir, f"{id_}.txt")
@@ -105,7 +105,7 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
 
 def load_flux_fill():
     repo_id = "black-forest-labs/FLUX.1-Fill-dev"
-    return FluxFillPipeline.from_pretrained(repo_id, torch_dtype=torch.bfloat16).to("cuda")
+    return FluxFillPipeline.from_pretrained(repo_id)
 
 # Copied from diffusers.pipelines.flux.pipeline_flux.calculate_shift
 def calculate_shift(
@@ -255,7 +255,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     height, width = init_image.shape[2], init_image.shape[3]
 
     init_image = pipeline.image_processor.preprocess(init_image, height=height, width=width)
-    init_image = init_image.to(dtype=torch.bfloat16)
+    init_image = init_image
     
     # 1. Choose a random timestep for the entire batch.
     num_inference_steps = torch.randint(20, 50, (1,)).item();
@@ -310,7 +310,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
 
     # 4. Prepare masked latents
     mask_image = pipeline.mask_processor.preprocess(mask_image, height=height, width=width)
-    mask_image = mask_image.to(dtype=torch.bfloat16)
+    mask_image = mask_image
 
     masked_image = init_image * (1 - mask_image)
     masked_image = masked_image.to(device=device, dtype=prompt_embeds.dtype)
