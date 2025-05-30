@@ -258,8 +258,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     batch_size = init_image.shape[0]
     height, width = init_image.shape[2], init_image.shape[3]
 
-    init_image = init_image.to(device)
-    mask_image = mask_image.to(device)
+    init_image = init_image.to(device, dtype=transformer.dtype)
+    mask_image = mask_image.to(device, dtype=transformer.dtype)
 
     init_image = pipeline.image_processor.preprocess(init_image, height=height, width=width)
     
@@ -298,6 +298,9 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         max_sequence_length=512,
         lora_scale=None,
     )
+
+    prompt_embeds.to(dtype=transformer.dtype)
+    pooled_prompt_embeds.to(dtype=transformer.dtype)
 
     # 3. Prepare latents
     num_channels_latents = pipeline.vae.config.latent_channels
@@ -340,7 +343,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
 
     # 5. handle guidance
     if pipeline.guidance_embeds:
-        guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
+        guidance = torch.full([1], guidance_scale, device=device, dtype=transformer.dtype)
         guidance = guidance.expand(latents.shape[0])
     else:
         guidance = None
@@ -350,7 +353,6 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
     print("before transformer forward pass:")
-    print_transformer_dtypes(transformer)
     noise_pred = transformer(
         hidden_states=torch.cat((latents, masked_image_latents), dim=2),
         timestep=timestep / 1000,
@@ -364,7 +366,6 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     )[0]
 
     print("after transformer forward pass:")
-    print_transformer_dtypes(transformer)
 
     noise_pred = pipeline._unpack_latents(
         noise_pred,
@@ -389,13 +390,6 @@ def collate_fn(batch):
     masks = torch.stack(masks)
     prompts = list(prompts)  # Ensures prompts is a list of strings
     return images, masks, prompts
-
-def print_transformer_dtypes(transformer):
-    # Print dtypes of all transformer parameters for verification
-    print("[bf16 debug] Transformer parameter dtypes:")
-    for n, p in transformer.named_parameters():
-        if p.dtype != torch.bfloat16:
-            print(f"Warning: Parameter {n} is not bf16, it is {p.dtype}. This may cause issues with bf16 training.")
 
 def main():
     parser = get_parser()
@@ -471,8 +465,6 @@ def main():
 
     optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr)
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
-
-    print_transformer_dtypes(transformer)
 
     transformer.train()
     for epoch in range(args.epochs):
