@@ -432,10 +432,8 @@ def main():
     val_dataset = FluxFillDataset(os.path.join('data', 'validation'))
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, collate_fn=collate_fn)
 
-    transformer = accelerator.prepare(transformer)
     optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr)
-    optimizer = accelerator.prepare(optimizer)
-    dataloader = accelerator.prepare(dataloader)
+    transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
 
     transformer.train()
     for epoch in range(args.epochs):
@@ -443,7 +441,8 @@ def main():
             images, masks, prompts = batch
             # Use the modular training_step function for per-batch training logic
             with accelerator.accumulate(transformer):
-                loss = training_step(transformer, pipeline, images, masks, prompts, accelerator.device)
+                with accelerator.autocast():
+                    loss = training_step(transformer, pipeline, images, masks, prompts, accelerator.device)
                 if loss is None:
                     raise RuntimeError("training_step returned None. Check implementation.")
                 accelerator.backward(loss)
