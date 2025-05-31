@@ -16,6 +16,7 @@ import gc
 
 from PIL import Image
 
+import diffusers
 from diffusers import FluxFillPipeline
 
 def get_parser():
@@ -31,6 +32,25 @@ def get_parser():
     parser.add_argument('--gradient_checkpointing', action='store_true', help='Enable gradient checkpointing for transformer')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help='Number of gradient accumulation steps')
     parser.add_argument('--offload-heavy-encoders', action='store_true', default=False, help='Offload heavy encoder modules to CPU to save GPU memory when not in use')
+
+    parser.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default="constant",
+        help=(
+            'The scheduler type to use. Choose between ["linear", "cosine", "cosine_with_restarts", "polynomial",'
+            ' "constant", "constant_with_warmup"]'
+        ),
+    )
+    parser.add_argument(
+        "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler."
+    )
+    parser.add_argument(
+        "--lr_num_cycles",
+        type=int,
+        default=1,
+        help="Number of hard resets of the lr in cosine_with_restarts scheduler.",
+    )
     return parser
 
 
@@ -550,8 +570,22 @@ def main():
     val_dataset = FluxFillDataset(os.path.join('data', 'validation'))
     val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=collate_fn)
 
-    optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr, fused=True)
-    transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
+    optimizer = torch.optim.AdamW(
+        transformer.parameters(), 
+        lr=args.lr, 
+        fused=True,
+    )
+
+    num_warmup_steps_for_scheduler = args.lr_warmup_steps * accelerator.num_processes
+    num_training_steps_for_scheduler = args.max_train_steps * accelerator.num_processes
+    lr_scheduler = diffusers.optimizer.get_scheduler(
+        args.lr_scheduler,
+        optimizer=optimizer,
+        num_warmup_steps=num_warmup_steps_for_scheduler,
+        num_training_steps=num_training_steps_for_scheduler,
+    )
+
+    transformer, optimizer, dataloader, lr_scheduler = accelerator.prepare(transformer, optimizer, dataloader, lr_scheduler)
 
     print(f"Optimizer dtype: {next(iter(optimizer.param_groups[0]['params'])).dtype}")
 
@@ -579,11 +613,12 @@ def main():
                 if accelerator.sync_gradients:
                     torch.cuda.empty_cache()  # Clear cache to avoid OOM errors
                     optimizer.step()
+                    lr_scheduler.step()
                     optimizer.zero_grad()
 
             # Log loss and learning rate to wandb (log only on main process and after accumulation step)
             if accelerator.is_main_process and accelerator.sync_gradients:
-                lr = optimizer.param_groups[0]['lr']
+                lr = lr_scheduler.get_last_lr()[0]
                 wandb.log({"train/loss": loss.item(), "train/lr": lr, "epoch": epoch, "step": step})
 
         # Validation logic
