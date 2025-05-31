@@ -535,7 +535,7 @@ def main():
     # Take the transformer out of the pipeline for training and then send everything else to
     # the accelerator device.
     pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
-    pipeline.to(accelerator.device)
+    pipeline.to(accelerator.device, dtype=weight_dtype)
 
     # explicitly disable gradient tracking for all non-transformer components
     pipeline.vae.requires_grad_(False)
@@ -560,6 +560,9 @@ def main():
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
 
     print(f"Optimizer dtype: {next(iter(optimizer.param_groups[0]['params'])).dtype}")
+
+    # TODO: remove. this just is for testing
+    validate(transformer, val_dataloader, accelerator, pipeline, epoch=0, offload_heavy=args.offload_heavy_encoders)
 
     transformer.train()
     for epoch in range(args.epochs):
