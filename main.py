@@ -76,6 +76,16 @@ def get_weight_dtype(accelerator):
     else:
         return torch.float32
     
+class DummyTransformer(torch.nn.Module):
+    def __init__(self, dtype=torch.float32):
+        super().__init__()
+        self._dtype = dtype
+    def forward(self, *args, **kwargs):
+        raise RuntimeError("Dummy transformer should not be called.")
+    @property
+    def dtype(self):
+        return self._dtype
+    
 def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
     if not accelerator.is_main_process:
         return
@@ -84,18 +94,51 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
 
     transformer.eval()
     val_losses = []
+    generated_images: list[wandb.Image] = []
     with torch.no_grad():
-        for images, masks, prompts in val_dataloader:
+        for image, mask, prompt in val_dataloader:
             # Use the same training_step for validation, but do not backprop
-            loss = training_step(transformer, pipeline, images, masks, prompts, weight_dtype, accelerator.device)
+            loss = training_step(transformer, pipeline, image, mask, prompt, weight_dtype, accelerator.device)
             if loss is not None:
                 val_losses.append(loss.item())
+
+            # Generate validation images.
+            # This requires setting `pipeline.transformer` to the unwrapped transformer model,
+            # and then setting it to `eval`.
+            #
+            # Then at the end we need to set `pipeline.transformer` back to the dummy transformer.
+            pipeline.transformer = transformer
+            pipeline.transformer.eval()
+
+            height, width = image.shape[2], image.shape[3]
+            # Generate images
+            with torch.no_grad():
+                outputs = pipeline(
+                    prompt=prompt,
+                    image=image,
+                    mask_image=mask,
+                    height=height,
+                    width=width,
+                    num_inference_steps=50,
+                    guidance_scale=7.5,
+                    output_type="pil",
+                ).images
+
+                for generated_image, single_prompt in zip(outputs, prompt):
+                    generated_image = generated_image.mode("RGB")
+                    wandb_image = wandb.Image(generated_image, caption=single_prompt)
+                    generated_images.append(wandb_image)
+                
+            # Set the transformer back to the dummy transformer
+            pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
+
     avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('nan')
-    log_dict = {"val_loss": avg_val_loss}
+    log_dict = {"val/loss": avg_val_loss, "val/samples": generated_images if len(generated_images) > 0 else None}
     if epoch is not None:
         log_dict["epoch"] = epoch
+
     wandb.log(log_dict)
-    accelerator.print(f"Validation{' at epoch ' + str(epoch) if epoch is not None else ''}: avg val loss = {avg_val_loss:.4f}")
+    accelerator.print(f"Validation{' at epoch ' + str(epoch + 1) if epoch is not None else ''}: avg val loss = {avg_val_loss:.4f}")
     transformer.train()
 
 def load_flux_fill(dtype):
@@ -467,16 +510,6 @@ def main():
 
     pipeline = load_flux_fill(weight_dtype)
 
-    class DummyTransformer(torch.nn.Module):
-        def __init__(self, dtype=torch.float32):
-            super().__init__()
-            self._dtype = dtype
-        def forward(self, *args, **kwargs):
-            raise RuntimeError("Dummy transformer should not be called.")
-        @property
-        def dtype(self):
-            return self._dtype
-
     # Only train the transformer component
     transformer = pipeline.transformer
 
@@ -503,7 +536,7 @@ def main():
 
     # Validation dataset and dataloader
     val_dataset = FluxFillDataset(os.path.join('data', 'validation'))
-    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, collate_fn=collate_fn)
+    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=collate_fn)
 
     optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr, fused=True)
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
@@ -531,10 +564,11 @@ def main():
                     torch.cuda.empty_cache()  # Clear cache to avoid OOM errors
                     optimizer.step()
                     optimizer.zero_grad()
+
             # Log loss and learning rate to wandb (log only on main process and after accumulation step)
             if accelerator.is_main_process and accelerator.sync_gradients:
                 lr = optimizer.param_groups[0]['lr']
-                wandb.log({"loss": loss.item(), "lr": lr, "epoch": epoch, "step": step})
+                wandb.log({"train/loss": loss.item(), "train/lr": lr, "epoch": epoch, "step": step})
 
         # Validation logic
         if (epoch + 1) % args.validation_epochs == 0:
