@@ -12,7 +12,7 @@ def patched_checkpoint(function, *args, **kwargs):
     func_name = getattr(function, "__name__", None)
     if func_name is None:
         func_name = getattr(getattr(function, "__class__", None), "__name__", str(type(function)))
-    print(f"[patched_checkpoint] Called with function: {func_name}")
+    print(f"[patched_checkpoint] Called with function: {func_name} args_len={len(args)}")
 
     for i, arg in enumerate(args):
         if isinstance(arg, torch.Tensor):
