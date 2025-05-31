@@ -87,11 +87,14 @@ class DummyTransformer(torch.nn.Module):
     def dtype(self):
         return self._dtype
     
+MAX_VALIDATION_IMAGES = 2
 def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, offload_heavy=False):
     if not accelerator.is_main_process:
         return
     
     weight_dtype = get_weight_dtype(accelerator)
+
+    print(f"Validating at epoch {epoch + 1 if epoch is not None else 'end'}...")
 
     transformer.eval()
     val_losses = []
@@ -111,19 +114,25 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
             pipeline.transformer = accelerator.unwrap_model(transformer)
             pipeline.transformer.eval()
 
+            if len(generated_images) >= MAX_VALIDATION_IMAGES:
+                break
+
             if offload_heavy:
                 pipeline.to(accelerator.device)
 
             height, width = image.shape[2], image.shape[3]
             # Generate images
             with torch.no_grad():
+                # disable pipeline progress bar
+                pipeline.set_progress_bar_config(disable=True)
+
                 outputs = pipeline(
                     prompt=prompt,
-                    image=image.to(device=accelerator.device),
-                    mask_image=mask.to(device=accelerator.device),
+                    image=image.to(device=accelerator.device, dtype=weight_dtype),
+                    mask_image=mask.to(device=accelerator.device, dtype=weight_dtype),
                     height=height,
                     width=width,
-                    num_inference_steps=50,
+                    num_inference_steps=20,
                     guidance_scale=7.5,
                     output_type="pil",
                 ).images
