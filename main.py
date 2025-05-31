@@ -19,9 +19,9 @@ from diffusers import FluxFillPipeline
 
 def get_parser():
     parser = argparse.ArgumentParser(description="Accelerate Training Loop with wandb")
-    parser.add_argument('--epochs', type=int, default=3, help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=8, help='Batch size for training')
-    parser.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size for training')
+    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--wandb_name', type=str, required=True, help='wandb run name')
     parser.add_argument('--wandb_project', type=str, required=True, help='wandb project name (umbrella for runs)')
     parser.add_argument('--validation_epochs', type=int, default=1, help='How often (in epochs) to run validation')
