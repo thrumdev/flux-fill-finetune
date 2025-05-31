@@ -392,6 +392,12 @@ def collate_fn(batch):
     return images, masks, prompts
 
 def register_hooks(model):
+    def shape_hook(name):
+        def hook(_, __, output):
+            if isinstance(output, torch.Tensor) and output.shape == (1, 1, 6912, 128):
+                print(f"[SHAPE MATCH] {name}: {output.dtype}")
+        return hook
+
     def check_dtype_hook(name):
         def hook(_, __, output):
             if isinstance(output, torch.Tensor) and output.dtype != torch.bfloat16:
@@ -400,6 +406,8 @@ def register_hooks(model):
 
     for name, module in model.named_modules():
         module.register_forward_hook(check_dtype_hook(name))
+        module.register_forward_hook(shape_hook(name))
+
 
 
 def main():
