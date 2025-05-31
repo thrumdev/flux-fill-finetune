@@ -4,6 +4,7 @@ import torch
 
 from torch.utils.checkpoint import checkpoint as orig_checkpoint
 from accelerate import Accelerator
+from tqdm import tqdm
 import torchvision
 from torch.utils.data import DataLoader, Dataset
 
@@ -511,7 +512,11 @@ def main():
 
     transformer.train()
     for epoch in range(args.epochs):
-        for step, batch in enumerate(dataloader):
+        if accelerator.is_main_process:
+            epoch_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Epoch {epoch+1}/{args.epochs}")
+        else:
+            epoch_bar = enumerate(dataloader)
+        for step, batch in epoch_bar:
             images, masks, prompts = batch
             # Use the modular training_step function for per-batch training logic
             with accelerator.accumulate(transformer):
@@ -530,8 +535,6 @@ def main():
             if accelerator.is_main_process and accelerator.sync_gradients:
                 lr = optimizer.param_groups[0]['lr']
                 wandb.log({"loss": loss.item(), "lr": lr, "epoch": epoch, "step": step})
-            if step % 10 == 0 and accelerator.is_main_process:
-                accelerator.print(f"Epoch {epoch} Step {step} Loss: {loss.item():.4f}")
 
         # Validation logic
         if (epoch + 1) % args.validation_epochs == 0:
