@@ -482,7 +482,6 @@ def main():
     # somehow the gradient/activation checkpointing in the FluxFillPipeline
     # does not work with the default torch.utils.checkpoint.checkpoint and gets the wrong dtype.
     def patched_checkpoint(function, *args, **kwargs):
-        print(f"[patched_checkpoint] Called: {function.__name__}")
         print(f"[patched_checkpoint] Args types: {[type(a) for a in args]}")
         print(f"[patched_checkpoint] Kwargs: {kwargs}")
         with accelerator.autocast():
@@ -536,7 +535,7 @@ def main():
     # DEBUG: override the checkpoint function in the pipeline
     if accelerator.is_main_process:
         print("[DEBUG] Overriding the gradient checkpointing function in the transformer.")
-        accelerator.unwrap_model(transformer)._gradient_checkpointing_func = patched_checkpoint
+        #accelerator.unwrap_model(transformer)._gradient_checkpointing_func = patched_checkpoint
 
     transformer.train()
     for epoch in range(args.epochs):
