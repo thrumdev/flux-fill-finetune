@@ -448,6 +448,15 @@ def main():
 
     accelerator = Accelerator()
 
+    # default ModelMixin gradient checkpointing function.
+    def _gradient_checkpointing_func(module, *args):
+        ckpt_kwargs = {"use_reentrant": False}
+        return torch.utils.checkpoint.checkpoint(
+            module.__call__,
+            *args,
+            **ckpt_kwargs,
+        )
+
     # hail mary: override the default checkpoint function to use autocast.
     # somehow the gradient/activation checkpointing in the FluxFillPipeline
     # does not work with the default torch.utils.checkpoint.checkpoint and gets the wrong dtype.
@@ -457,12 +466,9 @@ def main():
         print(f"[patched_checkpoint] Kwargs: {kwargs}")
         with accelerator.autocast():
             print("[patched_checkpoint] Entered autocast context")
-            result = orig_checkpoint(function, *args, **kwargs)
+            result = _gradient_checkpointing_func(function, *args, **kwargs)
             print("[patched_checkpoint] Checkpoint function executed successfully")
             return result
-
-    if accelerator.is_main_process:
-        torch.utils.checkpoint.checkpoint = patched_checkpoint
 
     pipeline = load_flux_fill()
 
@@ -478,6 +484,11 @@ def main():
 
     # Only train the transformer component
     transformer = pipeline.transformer
+    
+    # override the checkpoint function in the pipeline
+    if accelerator.is_main_process:
+        transformer._gradient_checkpointing_func = patched_checkpoint
+
     pipeline.guidance_embeds = transformer.config.guidance_embeds
     # Take the transformer out of the pipeline for training and then send everything else to
     # the accelerator device.
