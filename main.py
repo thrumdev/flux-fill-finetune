@@ -2,7 +2,7 @@ import os
 import argparse
 import torch
 
-import torch.utils.checkpoint.checkpoint as orig_checkpoint
+from torch.utils.checkpoint import checkpoint as orig_checkpoint
 
 # Patch before everything
 def patched_checkpoint(function, *args, **kwargs):
