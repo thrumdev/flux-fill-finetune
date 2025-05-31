@@ -3,30 +3,6 @@ import argparse
 import torch
 
 from torch.utils.checkpoint import checkpoint as orig_checkpoint
-
-accelerator = None
-
-# Patch before everything
-def patched_checkpoint(function, *args, **kwargs):
-    # __class__ is always present on Python objects, so this is safe.
-    # However, __class__.__name__ is not guaranteed to exist for all objects,
-    # but for normal Python classes it is. As a fallback, use str(type(function)).
-    func_name = getattr(function, "__name__", None)
-    if func_name is None:
-        func_name = getattr(getattr(function, "__class__", None), "__name__", str(type(function)))
-    print(f"[patched_checkpoint] Called with function: {func_name} args_len={len(args)}")
-
-    for i, arg in enumerate(args):
-        if isinstance(arg, torch.Tensor):
-            print(f"[patched_checkpoint] Arg {i} is a Tensor of type {arg.dtype} with shape {arg.shape}")
-        else:
-            print(f"[patched_checkpoint] Arg {i} is of type {type(arg)}")
-
-    with accelerator.autocast():
-        return orig_checkpoint(function, *args, **kwargs)
-
-torch.utils.checkpoint.checkpoint = patched_checkpoint
-
 from accelerate import Accelerator
 import torchvision
 from torch.utils.data import DataLoader, Dataset
@@ -235,10 +211,6 @@ def prepare_latents_and_target(
 
     image = image.to(device=device, dtype=dtype)
 
-    if accelerator.is_main_process:
-        print(f"before latents image shape: {image.shape}, dtype: {image.dtype}")
-        print(torch.cuda.memory_summary())
-    
     if image.shape[1] != pipeline.latent_channels:
         image_latents = pipeline._encode_vae_image(image=image, generator=None)
     else:
@@ -405,9 +377,6 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
         t = torch.randint(0, len(timesteps), (1,), device=device)
         timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
-    # TODO: remove
-    debug_type_printing(transformer, latents, masked_image_latents)
-
     # 6. Forward pass through the transformer. Everything from here on will be gradient-tracked.
     noise_pred = transformer(
         hidden_states=torch.cat((latents, masked_image_latents), dim=2),
@@ -448,28 +417,7 @@ def collate_fn(batch):
     prompts = list(prompts)  # Ensures prompts is a list of strings
     return images, masks, prompts
 
-def register_hooks(model):
-    def shape_hook(name):
-        def hook(_, __, output):
-            if isinstance(output, torch.Tensor) and output.shape == (1, 1, 6912, 128):
-                print(f"[SHAPE MATCH] {name}: {output.dtype}")
-        return hook
-
-    def check_dtype_hook(name):
-        def hook(_, __, output):
-            if isinstance(output, torch.Tensor):
-                print(f"[dtype check] {name}: {output.shape} {output.dtype}")
-        return hook
-
-    for name, module in model.named_modules():
-        module.register_forward_hook(check_dtype_hook(name))
-        module.register_forward_hook(shape_hook(name))
-
-
-
 def main():
-    global accelerator
-
     torch.utils.checkpoint.set_checkpoint_debug_enabled(True)
 
     parser = get_parser()
@@ -511,27 +459,6 @@ def main():
 
     weight_dtype = get_weight_dtype(accelerator)
     print(f"Using weight dtype: {weight_dtype}")
-
-    # default ModelMixin gradient checkpointing function.
-    def _gradient_checkpointing_func(module, *args):
-        ckpt_kwargs = {"use_reentrant": False}
-        return torch.utils.checkpoint.checkpoint(
-            module.__call__,
-            *args,
-            **ckpt_kwargs,
-        )
-
-    # hail mary: override the default checkpoint function to use autocast.
-    # somehow the gradient/activation checkpointing in the FluxFillPipeline
-    # does not work with the default torch.utils.checkpoint.checkpoint and gets the wrong dtype.
-    def patched_checkpoint(function, *args, **kwargs):
-        print(f"[patched_checkpoint] Args types: {[type(a) for a in args]}")
-        print(f"[patched_checkpoint] Kwargs: {kwargs}")
-        with accelerator.autocast():
-            print("[patched_checkpoint] Entered autocast context")
-            result = _gradient_checkpointing_func(function, *args, **kwargs)
-            print("[patched_checkpoint] Checkpoint function executed successfully")
-            return result
 
     pipeline = load_flux_fill(weight_dtype)
 
@@ -578,40 +505,23 @@ def main():
 
     print(f"Optimizer dtype: {next(iter(optimizer.param_groups[0]['params'])).dtype}")
 
-    # DEBUG: register hoooks to check for dtype mismatches
-    if accelerator.is_main_process:
-        register_hooks(transformer)
-
-    # DEBUG: override the checkpoint function in the pipeline
-    if accelerator.is_main_process:
-        print("[DEBUG] Overriding the gradient checkpointing function in the transformer.")
-        #accelerator.unwrap_model(transformer)._gradient_checkpointing_func = patched_checkpoint
-
     transformer.train()
     for epoch in range(args.epochs):
         for step, batch in enumerate(dataloader):
             images, masks, prompts = batch
             # Use the modular training_step function for per-batch training logic
             with accelerator.accumulate(transformer):
-                if accelerator.is_main_process:
-                    print("forward")
-                    print(torch.cuda.memory_summary())
-
                 with accelerator.autocast():
                     loss = training_step(transformer, pipeline, images, masks, prompts, weight_dtype, accelerator.device)
                 if loss is None:
                     raise RuntimeError("training_step returned None. Check implementation.")
                 
-                if accelerator.is_main_process:
-                    print("backward")
-                    print(torch.cuda.memory_summary())
-
                 accelerator.backward(loss)
                 # Only step optimizer and zero grad when gradients are synced (i.e., after accumulation)
                 if accelerator.sync_gradients:
                     torch.cuda.empty_cache()  # Clear cache to avoid OOM errors
                     optimizer.step()
-                    optimizer.zero_grad(set_to_none=True)
+                    optimizer.zero_grad()
             # Log loss and learning rate to wandb (log only on main process and after accumulation step)
             if accelerator.is_main_process and accelerator.sync_gradients:
                 lr = optimizer.param_groups[0]['lr']
