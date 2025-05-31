@@ -87,7 +87,7 @@ class DummyTransformer(torch.nn.Module):
     def dtype(self):
         return self._dtype
     
-MAX_VALIDATION_IMAGES = 2
+MAX_VALIDATION_IMAGES = 4
 def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, offload_heavy=False):
     if not accelerator.is_main_process:
         return
