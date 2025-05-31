@@ -88,13 +88,13 @@ class DummyTransformer(torch.nn.Module):
         return self._dtype
     
 MAX_VALIDATION_IMAGES = 4
-def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, offload_heavy=False):
+def validate(transformer, val_dataloader, accelerator, pipeline, epoch=-1, offload_heavy=False):
     if not accelerator.is_main_process:
         return
     
     weight_dtype = get_weight_dtype(accelerator)
 
-    print(f"Validating at epoch {epoch + 1 if epoch is not None else 'end'}...")
+    print(f"Validating at epoch {epoch}...")
 
     transformer.eval()
     val_losses = []
@@ -139,8 +139,7 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
 
     avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('nan')
     log_dict = {"val/loss": avg_val_loss, "val/samples": generated_images if len(generated_images) > 0 else None}
-    if epoch is not None:
-        log_dict["epoch"] = epoch
+    log_dict["epoch"] = epoch
 
     # Set the transformer back to the dummy transformer
     pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
@@ -555,6 +554,8 @@ def main():
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
 
     print(f"Optimizer dtype: {next(iter(optimizer.param_groups[0]['params'])).dtype}")
+
+    validate(transformer, val_dataloader, accelerator, pipeline, offload_heavy=args.offload_heavy_encoders)
 
     transformer.train()
     for epoch in range(args.epochs):
