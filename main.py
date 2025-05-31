@@ -449,6 +449,8 @@ def register_hooks(model):
 def main():
     global accelerator
 
+    torch.utils.checkpoint.set_checkpoint_debug_enabled(True)
+
     parser = get_parser()
     args = parser.parse_args()
 
