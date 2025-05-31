@@ -585,6 +585,8 @@ def main():
             with accelerator.accumulate(transformer):
                 if accelerator.is_main_process:
                     print("forward")
+                    print(torch.cuda.memory_summary())
+
                 with accelerator.autocast():
                     loss = training_step(transformer, pipeline, images, masks, prompts, weight_dtype, accelerator.device)
                 if loss is None:
