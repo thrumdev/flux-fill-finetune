@@ -549,6 +549,11 @@ def main():
     pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
     pipeline.to(accelerator.device)
 
+    # explicitly disable gradient tracking for all non-transformer components
+    pipeline.vae.requires_grad_(False)
+    pipeline.text_encoder.requires_grad_(False)
+    pipeline.text_encoder_2.requires_grad_(False)
+
     if args.gradient_checkpointing:
         print("Enabling gradient checkpointing for transformer...")
         if hasattr(transformer, 'enable_gradient_checkpointing'):
