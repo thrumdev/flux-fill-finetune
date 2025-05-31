@@ -266,10 +266,33 @@ def load_checkpoint(transformer, optimizer, checkpoint_path):
     start_epoch = checkpoint["epoch"]
     return start_epoch
 
+def select_timesteps(batch_size, pipeline):
+    u = diffusers.training_utils.compute_density_for_timestep_sampling(
+        weighting_scheme="none",
+        batch_size=batch_size,
+        logit_mean=0.0,
+        logit_std=1.0,
+        mode_scale=1.29,
+    )
+    indices = (u * pipeline.scheduler.config.num_train_timesteps).long()
+    timesteps = pipeline.scheduler.timesteps[indices]
+    return timesteps
+
+def get_sigmas(scheduler, timesteps, n_dim=4):
+    sigmas = scheduler.sigmas
+    schedule_timesteps = scheduler.timesteps
+    timesteps = timesteps
+    step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
+
+    sigma = sigmas[step_indices].flatten()
+    while len(sigma.shape) < n_dim:
+        sigma = sigma.unsqueeze(-1)
+    return sigma
+
 def prepare_latents_and_target(
     pipeline,
     image,
-    timestep,
+    timesteps,
     batch_size,
     num_channels_latents,
     height,
@@ -277,10 +300,6 @@ def prepare_latents_and_target(
     dtype,
     device,
 ):
-    # VAE applies 8x compression on images but we must also account for packing which requires
-    # latent height and width to be divisible by 2.
-    height = 2 * (int(height) // (pipeline.vae_scale_factor * 2))
-    width = 2 * (int(width) // (pipeline.vae_scale_factor * 2))
     shape = (batch_size, num_channels_latents, height, width)
     latent_image_ids = pipeline._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
 
@@ -305,9 +324,19 @@ def prepare_latents_and_target(
 
     target = noise - image_latents
 
-    latents = pipeline.scheduler.scale_noise(image_latents, timestep, noise)
-    latents = pipeline._pack_latents(latents, batch_size, num_channels_latents, height, width)
-    return latents, latent_image_ids, target
+    # add noise
+    sigmas = get_sigmas(pipeline.scheduler, timesteps, n_dim=len(shape))
+    noisy_latents = (1.0 - sigmas) * image_latents + sigmas * noise
+
+
+    packed_noisy_latents = pipeline._pack_latents(
+        noisy_latents,                    
+        batch_size=noisy_latents.shape[0],
+        num_channels_latents=noisy_latents.shape[1],
+        height=noisy_latents.shape[2],
+        width=noisy_latents.shape[3]
+    )
+    return packed_noisy_latents, latent_image_ids, target
 
 def offload_pipeline_heavy(pipeline):
     """
@@ -359,8 +388,6 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
         init_image = pipeline.image_processor.preprocess(init_image, height=height, width=width)
         
         # 1. Choose a random timestep for the entire batch.
-        num_inference_steps = torch.randint(20, 50, (1,)).item();
-        sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         image_seq_len = (int(height) // pipeline.vae_scale_factor // 2) * (int(width) // pipeline.vae_scale_factor // 2)
         mu = calculate_shift(
             image_seq_len,
@@ -369,14 +396,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
             pipeline.scheduler.config.get("base_shift", 0.5),
             pipeline.scheduler.config.get("max_shift", 1.15),
         )
-        timesteps, num_inference_steps = retrieve_timesteps(
-            pipeline.scheduler,
-            num_inference_steps,
-            device,
-            sigmas=sigmas,
-            mu=mu,
-        )
-        timesteps, num_inference_steps = pipeline.get_timesteps(num_inference_steps, 1.0, device)
+        timesteps = select_timesteps(batch_size, pipeline).to(device=device)
 
         if offload_heavy_encoders:
             load_pipeline_heavy(pipeline, device)
@@ -407,11 +427,12 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
 
         # 3. Prepare latents
         num_channels_latents = pipeline.vae.config.latent_channels
-        latent_timestep = timesteps[:1].repeat(batch_size)
+        height, width = init_image.shape[2], init_image.shape[3]
+
         latents, latent_image_ids, target = prepare_latents_and_target(
             pipeline,
             init_image,
-            latent_timestep,
+            timesteps,
             batch_size,
             num_channels_latents,
             height,
@@ -451,13 +472,10 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
         else:
             guidance = None
 
-        t = torch.randint(0, len(timesteps), (1,), device=device)
-        timestep = t.expand(latents.shape[0]).to(latents.dtype)
-
     # 6. Forward pass through the transformer. Everything from here on will be gradient-tracked.
     noise_pred = transformer(
         hidden_states=torch.cat((latents, masked_image_latents), dim=2),
-        timestep=timestep / 1000,
+        timestep=timesteps / 1000,
         guidance=guidance,
         pooled_projections=pooled_prompt_embeds,
         encoder_hidden_states=prompt_embeds,
