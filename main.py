@@ -587,16 +587,18 @@ def main():
                 wandb.log({"train/loss": loss.item(), "train/lr": lr, "epoch": epoch, "step": step})
 
         # Validation logic
-        if (epoch + 1) % args.validation_epochs == 0:
+        is_last_epoch = (epoch + 1) == args.epochs
+        if (epoch + 1) % args.validation_epochs == 0 and not is_last_epoch:
             validate(transformer, val_dataloader, accelerator, pipeline, epoch=epoch, offload_heavy=args.offload_heavy_encoders)
 
         # Checkpoint saving logic (avoid duplicate save at end, and allow save_epochs==0 to mean 'never except end')
-        is_last_epoch = (epoch + 1) == args.epochs
+
         if args.save_epochs > 0 and (epoch + 1) % args.save_epochs == 0 and not is_last_epoch and accelerator.is_main_process:
             save_checkpoint(transformer, optimizer, epoch + 1)
 
     # Final validation at the end
-    validate(transformer, val_dataloader, accelerator, pipeline, offload_heavy=args.offload_heavy_encoders)
+    validate(transformer, val_dataloader, accelerator, pipeline, epoch=args.epochs-1, offload_heavy=args.offload_heavy_encoders)
+
     # Always save a final checkpoint at the end
     if accelerator.is_main_process:
         save_checkpoint(transformer, optimizer, args.epochs)
