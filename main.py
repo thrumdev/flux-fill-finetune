@@ -90,15 +90,26 @@ class FluxFillDataset(Dataset):
 
         return image, mask, prompt
     
+def get_weight_dtype(accelerator):
+    if accelerator.mixed_precision == "fp16":
+        return torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        return torch.bfloat16
+    else:
+        return torch.float32
+    
 def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
     if not accelerator.is_main_process:
         return
+    
+    weight_dtype = get_weight_dtype(accelerator)
+
     transformer.eval()
     val_losses = []
     with torch.no_grad():
         for images, masks, prompts in val_dataloader:
             # Use the same training_step for validation, but do not backprop
-            loss = training_step(transformer, pipeline, images, masks, prompts, accelerator.device)
+            loss = training_step(transformer, pipeline, images, masks, prompts, weight_dtype, accelerator.device)
             if loss is not None:
                 val_losses.append(loss.item())
     avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('nan')
@@ -109,9 +120,9 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
     accelerator.print(f"Validation{' at epoch ' + str(epoch) if epoch is not None else ''}: avg val loss = {avg_val_loss:.4f}")
     transformer.train()
 
-def load_flux_fill():
+def load_flux_fill(dtype):
     repo_id = "black-forest-labs/FLUX.1-Fill-dev"
-    return FluxFillPipeline.from_pretrained(repo_id)
+    return FluxFillPipeline.from_pretrained(repo_id, torch_dtype=dtype)
 
 # Copied from diffusers.pipelines.flux.pipeline_flux.calculate_shift
 def calculate_shift(
@@ -263,15 +274,13 @@ def load_pipeline_heavy(pipeline, device):
         pipeline.text_encoder_2.to(device)
 
 def debug_type_printing(transformer, latents, masked_image_latents):
-    for n, p in transformer.named_parameters():
-        print(f"model param dtype {n}: {p.dtype}")
-        break  # just check the first one
+    print(f"model param dtype: {next(transformer.parameters()).dtype}")
 
     print(f"latents dtype: {latents.dtype}, shape: {latents.shape}")
     print(f"masked_image_latents dtype: {masked_image_latents.dtype}, shape: {masked_image_latents.shape}")
 
 # Runs a training step. returns the loss.
-def training_step(transformer, pipeline, init_image, mask_image, prompt, device):
+def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_dtype, device):
     """
     Args:
         transformer: The transformer module from the pipeline (pipeline.transformer)
@@ -294,8 +303,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         batch_size = init_image.shape[0]
         height, width = init_image.shape[2], init_image.shape[3]
 
-        init_image = init_image.to(device, dtype=transformer.dtype)
-        mask_image = mask_image.to(device, dtype=transformer.dtype)
+        init_image = init_image.to(device, dtype=weight_dtype)
+        mask_image = mask_image.to(device, dtype=weight_dtype)
 
         init_image = pipeline.image_processor.preprocess(init_image, height=height, width=width)
         
@@ -335,8 +344,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
             lora_scale=None,
         )
 
-        prompt_embeds = prompt_embeds.to(dtype=transformer.dtype)
-        pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=transformer.dtype)
+        prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
+        pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=weight_dtype)
 
         # 3. Prepare latents
         num_channels_latents = pipeline.vae.config.latent_channels
@@ -349,7 +358,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
             num_channels_latents,
             height,
             width,
-            prompt_embeds.dtype,
+            weight_dtype,
             device,
         )
 
@@ -379,7 +388,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
 
         # 5. handle guidance
         if pipeline.guidance_embeds:
-            guidance = torch.full([1], guidance_scale, device=device, dtype=transformer.dtype)
+            guidance = torch.full([1], guidance_scale, device=device, dtype=weight_dtype)
             guidance = guidance.expand(latents.shape[0])
         else:
             guidance = None
@@ -495,6 +504,9 @@ def main():
 
     accelerator = Accelerator()
 
+    weight_dtype = get_weight_dtype(accelerator)
+    print(f"Using weight dtype: {weight_dtype}")
+
     # default ModelMixin gradient checkpointing function.
     def _gradient_checkpointing_func(module, *args):
         ckpt_kwargs = {"use_reentrant": False}
@@ -516,7 +528,7 @@ def main():
             print("[patched_checkpoint] Checkpoint function executed successfully")
             return result
 
-    pipeline = load_flux_fill()
+    pipeline = load_flux_fill(weight_dtype)
 
     class DummyTransformer(torch.nn.Module):
         def __init__(self, dtype=torch.float32):
@@ -572,7 +584,7 @@ def main():
                 if accelerator.is_main_process:
                     print("forward")
                 with accelerator.autocast():
-                    loss = training_step(transformer, pipeline, images, masks, prompts, accelerator.device)
+                    loss = training_step(transformer, pipeline, images, masks, prompts, weight_dtype, accelerator.device)
                 if loss is None:
                     raise RuntimeError("training_step returned None. Check implementation.")
                 
