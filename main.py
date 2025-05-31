@@ -117,15 +117,14 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
                 if loss is not None:
                     val_losses.append(loss.item())
 
-
                 if len(generated_images) >= MAX_VALIDATION_IMAGES:
                     continue
 
                 height, width = image.shape[2], image.shape[3]
                 outputs = pipeline(
                     prompt=prompt,
-                    image=image,
-                    mask_image=mask,
+                    image=image.to(device=accelerator.device, dtype=weight_dtype),
+                    mask_image=mask.to(device=accelerator.device, dtype=weight_dtype),
                     height=height,
                     width=width,
                     num_inference_steps=20,
