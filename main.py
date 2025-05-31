@@ -611,7 +611,7 @@ def main():
                 if accelerator.sync_gradients:
                     torch.cuda.empty_cache()  # Clear cache to avoid OOM errors
                     optimizer.step()
-                    optimizer.zero_grad()
+                    optimizer.zero_grad(set_to_none=True)
             # Log loss and learning rate to wandb (log only on main process and after accumulation step)
             if accelerator.is_main_process and accelerator.sync_gradients:
                 lr = optimizer.param_groups[0]['lr']
