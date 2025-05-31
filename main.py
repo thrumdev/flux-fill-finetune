@@ -107,29 +107,25 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
     # Then at the end we need to set `pipeline.transformer` back to the dummy transformer.
     pipeline.transformer = accelerator.unwrap_model(transformer)
     pipeline.transformer.eval()
-    pipeline.transformer.to(accelerator.device, dtype=weight_dtype)
+    pipeline.set_progress_bar_config(disable=True)
     
     with torch.no_grad():
-        for image, mask, prompt in val_dataloader:
-            # Use the same training_step for validation, but do not backprop
-            loss = training_step(transformer, pipeline, image, mask, prompt, weight_dtype, accelerator.device, offload_heavy)
-            if loss is not None:
-                val_losses.append(loss.item())
+        with torch.autocast(device_type=accelerator.device.type, dtype=weight_dtype):
+            for image, mask, prompt in val_dataloader:
+                # Use the same training_step for validation, but do not backprop
+                loss = training_step(transformer, pipeline, image, mask, prompt, weight_dtype, accelerator.device, offload_heavy)
+                if loss is not None:
+                    val_losses.append(loss.item())
 
 
-            if len(generated_images) >= MAX_VALIDATION_IMAGES:
-                break
+                if len(generated_images) >= MAX_VALIDATION_IMAGES:
+                    break
 
-            height, width = image.shape[2], image.shape[3]
-            # Generate images
-            with torch.no_grad():
-                # disable pipeline progress bar
-                pipeline.set_progress_bar_config(disable=True)
-
+                height, width = image.shape[2], image.shape[3]
                 outputs = pipeline(
                     prompt=prompt,
-                    image=image.to(device=accelerator.device, dtype=weight_dtype),
-                    mask_image=mask.to(device=accelerator.device, dtype=weight_dtype),
+                    image=image,
+                    mask_image=mask,
                     height=height,
                     width=width,
                     num_inference_steps=20,
@@ -138,12 +134,9 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
                 ).images
 
                 for generated_image, single_prompt in zip(outputs, prompt):
-                    generated_image = generated_image.mode("RGB")
+                    generated_image = generated_image.convert("RGB")
                     wandb_image = wandb.Image(generated_image, caption=single_prompt)
                     generated_images.append(wandb_image)
-
-            if offload_heavy:
-                offload_pipeline_heavy(pipeline)
 
     avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('nan')
     log_dict = {"val/loss": avg_val_loss, "val/samples": generated_images if len(generated_images) > 0 else None}
@@ -152,6 +145,9 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
 
     # Set the transformer back to the dummy transformer
     pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
+
+    if offload_heavy:
+        offload_pipeline_heavy(pipeline)
 
     wandb.log(log_dict)
     accelerator.print(f"Validation{' at epoch ' + str(epoch + 1) if epoch is not None else ''}: avg val loss = {avg_val_loss:.4f}")
