@@ -449,8 +449,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
 
     noise_pred = pipeline._unpack_latents(
         noise_pred,
-        height=height,
-        width=width,
+        height=latents.shape[2] * pipeline.vae_scale_factor,
+        width=latents.shape[3]* pipeline.vae_scale_factor,
         vae_scale_factor=pipeline.vae_scale_factor,
     )
 
