@@ -4,7 +4,6 @@ from accelerate import Accelerator
 import torch
 import torchvision
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.checkpoint import checkpoint as orig_checkpoint
 
 import wandb
 import numpy as np
@@ -484,10 +483,6 @@ def main():
 
     # Only train the transformer component
     transformer = pipeline.transformer
-    
-    # override the checkpoint function in the pipeline
-    if accelerator.is_main_process:
-        transformer._gradient_checkpointing_func = patched_checkpoint
 
     pipeline.guidance_embeds = transformer.config.guidance_embeds
     # Take the transformer out of the pipeline for training and then send everything else to
@@ -515,6 +510,11 @@ def main():
     # DEBUG: register hoooks to check for dtype mismatches
     if accelerator.is_main_process:
         register_hooks(transformer)
+
+    # DEBUG: override the checkpoint function in the pipeline
+    if accelerator.is_main_process:
+        print("[DEBUG] Overriding the gradient checkpointing function in the transformer.")
+        accelerator.unwrap_model(transformer)._gradient_checkpointing_func = patched_checkpoint
 
     transformer.train()
     for epoch in range(args.epochs):
