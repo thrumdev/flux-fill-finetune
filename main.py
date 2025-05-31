@@ -557,9 +557,6 @@ def main():
 
     print(f"Optimizer dtype: {next(iter(optimizer.param_groups[0]['params'])).dtype}")
 
-    # TODO: remove. this just is for testing
-    validate(transformer, val_dataloader, accelerator, pipeline, epoch=0, offload_heavy=args.offload_heavy_encoders)
-
     transformer.train()
     for epoch in range(args.epochs):
         if accelerator.is_main_process:
