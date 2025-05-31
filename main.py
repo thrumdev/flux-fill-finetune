@@ -1,7 +1,17 @@
 import os
 import argparse
-from accelerate import Accelerator
 import torch
+
+import torch.utils.checkpoint.checkpoint as orig_checkpoint
+
+# Patch before everything
+def patched_checkpoint(function, *args, **kwargs):
+    print(f"[patched_checkpoint] Called with function: {function.__name__}")
+    return orig_checkpoint(function, *args, **kwargs)
+
+torch.utils.checkpoint.checkpoint = patched_checkpoint
+
+from accelerate import Accelerator
 import torchvision
 from torch.utils.data import DataLoader, Dataset
 
@@ -492,8 +502,8 @@ def main():
 
     if args.gradient_checkpointing:
         print("Enabling gradient checkpointing for transformer...")
-        if hasattr(transformer, 'gradient_checkpointing_enable'):
-            transformer.gradient_checkpointing_enable()
+        if hasattr(transformer, 'enable_gradient_checkpointing'):
+            transformer.enable_gradient_checkpointing()
         else:
             print("Warning: transformer does not support gradient checkpointing.")
 
