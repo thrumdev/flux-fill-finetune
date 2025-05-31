@@ -35,8 +35,8 @@ import wandb
 import numpy as np
 import inspect
 import random
+import gc
 
-import os
 from PIL import Image
 
 from diffusers import FluxFillPipeline
@@ -285,6 +285,9 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
     """
 
     load_pipeline_heavy(pipeline, device)
+
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # disable gradient tracking for preparing inputs.
     with torch.no_grad():
@@ -575,6 +578,7 @@ def main():
                 
                 if accelerator.is_main_process:
                     print("backward")
+                    print(torch.cuda.memory_summary())
 
                 accelerator.backward(loss)
                 # Only step optimizer and zero grad when gradients are synced (i.e., after accumulation)
