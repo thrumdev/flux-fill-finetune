@@ -253,6 +253,8 @@ def offload_pipeline_heavy(pipeline):
     if hasattr(pipeline, "text_encoder_2") and pipeline.text_encoder_2 is not None:
         pipeline.text_encoder_2.to("cpu")
 
+    torch.cuda.empty_cache()
+
 def load_pipeline_heavy(pipeline, device):
     """
     Load heavy pipeline modules (e.g., text_encoder_2 - t5) to the specified device.
