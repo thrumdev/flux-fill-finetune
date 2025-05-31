@@ -282,6 +282,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         loss: torch.Tensor
     """
 
+    load_pipeline_heavy(pipeline, device)
+
     # disable gradient tracking for preparing inputs.
     with torch.no_grad():
         batch_size = init_image.shape[0]
