@@ -30,6 +30,7 @@ def get_parser():
     parser.add_argument('--seed', type=int, default=None, help='Random seed (optional, if not set a random one will be generated)')
     parser.add_argument('--gradient_checkpointing', action='store_true', help='Enable gradient checkpointing for transformer')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help='Number of gradient accumulation steps')
+    parser.add_argument('--offload-heavy-encoders', action='store_true', default=False, help='Offload heavy encoder modules to CPU to save GPU memory when not in use')
     return parser
 
 
@@ -86,7 +87,7 @@ class DummyTransformer(torch.nn.Module):
     def dtype(self):
         return self._dtype
     
-def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
+def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, offload_heavy=False):
     if not accelerator.is_main_process:
         return
     
@@ -98,7 +99,7 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
     with torch.no_grad():
         for image, mask, prompt in val_dataloader:
             # Use the same training_step for validation, but do not backprop
-            loss = training_step(transformer, pipeline, image, mask, prompt, weight_dtype, accelerator.device)
+            loss = training_step(transformer, pipeline, image, mask, prompt, weight_dtype, accelerator.device, offload_heavy)
             if loss is not None:
                 val_losses.append(loss.item())
 
@@ -107,16 +108,19 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
             # and then setting it to `eval`.
             #
             # Then at the end we need to set `pipeline.transformer` back to the dummy transformer.
-            pipeline.transformer = transformer
+            pipeline.transformer = accelerator.unwrap_model(transformer)
             pipeline.transformer.eval()
+
+            if offload_heavy:
+                pipeline.to(accelerator.device)
 
             height, width = image.shape[2], image.shape[3]
             # Generate images
             with torch.no_grad():
                 outputs = pipeline(
                     prompt=prompt,
-                    image=image,
-                    mask_image=mask,
+                    image=image.to(device=accelerator.device),
+                    mask_image=mask.to(device=accelerator.device),
                     height=height,
                     width=width,
                     num_inference_steps=50,
@@ -131,6 +135,9 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None):
                 
             # Set the transformer back to the dummy transformer
             pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
+
+            if offload_heavy:
+                offload_pipeline_heavy(pipeline)
 
     avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('nan')
     log_dict = {"val/loss": avg_val_loss, "val/samples": generated_images if len(generated_images) > 0 else None}
@@ -302,7 +309,7 @@ def debug_type_printing(transformer, latents, masked_image_latents):
     print(f"masked_image_latents dtype: {masked_image_latents.dtype}, shape: {masked_image_latents.shape}")
 
 # Runs a training step. returns the loss.
-def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_dtype, device):
+def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_dtype, device, offload_heavy_encoders):
     """
     Args:
         transformer: The transformer module from the pipeline (pipeline.transformer)
@@ -348,7 +355,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
         )
         timesteps, num_inference_steps = pipeline.get_timesteps(num_inference_steps, 1.0, device)
 
-        load_pipeline_heavy(pipeline, device)
+        if offload_heavy_encoders:
+            load_pipeline_heavy(pipeline, device)
 
         # 2. Encode prompts, then offload heavy pipeline modules to CPU to save memory
         (
@@ -368,7 +376,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
 
         # Offload heavy pipeline modules to CPU to save memory
         # This is important to avoid OOM errors during training.
-        offload_pipeline_heavy(pipeline)
+        if offload_heavy_encoders:
+            offload_pipeline_heavy(pipeline)
 
         prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
         pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=weight_dtype)
@@ -554,7 +563,9 @@ def main():
             # Use the modular training_step function for per-batch training logic
             with accelerator.accumulate(transformer):
                 with accelerator.autocast():
-                    loss = training_step(transformer, pipeline, images, masks, prompts, weight_dtype, accelerator.device)
+                    loss = training_step(
+                        transformer, pipeline, images, masks, prompts, weight_dtype, accelerator.device, args.offload_heavy_encoders
+                    )
                 if loss is None:
                     raise RuntimeError("training_step returned None. Check implementation.")
                 
@@ -572,7 +583,7 @@ def main():
 
         # Validation logic
         if (epoch + 1) % args.validation_epochs == 0:
-            validate(transformer, val_dataloader, accelerator, pipeline, epoch=epoch)
+            validate(transformer, val_dataloader, accelerator, pipeline, epoch=epoch, offload_heavy=args.offload_heavy_encoders)
 
         # Checkpoint saving logic (avoid duplicate save at end, and allow save_epochs==0 to mean 'never except end')
         is_last_epoch = (epoch + 1) == args.epochs
@@ -580,7 +591,7 @@ def main():
             save_checkpoint(transformer, optimizer, epoch + 1)
 
     # Final validation at the end
-    validate(transformer, val_dataloader, accelerator, pipeline)
+    validate(transformer, val_dataloader, accelerator, pipeline, offload_heavy=args.offload_heavy_encoders)
     # Always save a final checkpoint at the end
     if accelerator.is_main_process:
         save_checkpoint(transformer, optimizer, args.epochs)
