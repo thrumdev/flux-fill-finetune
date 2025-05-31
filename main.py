@@ -6,7 +6,8 @@ from torch.utils.checkpoint import checkpoint as orig_checkpoint
 
 # Patch before everything
 def patched_checkpoint(function, *args, **kwargs):
-    print(f"[patched_checkpoint] Called with function: {function.__name__}")
+    func_name = getattr(function, "__name__", repr(function))
+    print(f"[patched_checkpoint] Called with function: {func_name}")
     return orig_checkpoint(function, *args, **kwargs)
 
 torch.utils.checkpoint.checkpoint = patched_checkpoint
