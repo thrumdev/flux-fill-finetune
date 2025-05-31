@@ -119,7 +119,7 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
 
 
                 if len(generated_images) >= MAX_VALIDATION_IMAGES:
-                    break
+                    continue
 
                 height, width = image.shape[2], image.shape[3]
                 outputs = pipeline(
