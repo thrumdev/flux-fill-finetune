@@ -563,8 +563,10 @@ def main():
     val_dataset = FluxFillDataset(os.path.join('data', 'validation'))
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=False, collate_fn=collate_fn)
 
-    optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr, fused=True)
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
+
+    print(f"Optimizer dtype: {next(optimizer.param_groups[0]['params']).dtype}")
 
     # DEBUG: register hoooks to check for dtype mismatches
     if accelerator.is_main_process:
@@ -595,6 +597,7 @@ def main():
                 accelerator.backward(loss)
                 # Only step optimizer and zero grad when gradients are synced (i.e., after accumulation)
                 if accelerator.sync_gradients:
+                    torch.cuda.empty_cache()  # Clear cache to avoid OOM errors
                     optimizer.step()
                     optimizer.zero_grad()
             # Log loss and learning rate to wandb (log only on main process and after accumulation step)
