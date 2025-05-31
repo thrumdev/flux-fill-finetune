@@ -6,8 +6,19 @@ from torch.utils.checkpoint import checkpoint as orig_checkpoint
 
 # Patch before everything
 def patched_checkpoint(function, *args, **kwargs):
-    func_name = getattr(function, "__name__", repr(function))
+    # __class__ is always present on Python objects, so this is safe.
+    # However, __class__.__name__ is not guaranteed to exist for all objects,
+    # but for normal Python classes it is. As a fallback, use str(type(function)).
+    func_name = getattr(function, "__name__", None)
+    if func_name is None:
+        func_name = getattr(getattr(function, "__class__", None), "__name__", str(type(function)))
     print(f"[patched_checkpoint] Called with function: {func_name}")
+
+    for i, arg in enumerate(args):
+        if isinstance(arg, torch.Tensor):
+            print(f"[patched_checkpoint] Arg {i} is a Tensor of type {arg.dtype} with shape {arg.shape}")
+        else:
+            print(f"[patched_checkpoint] Arg {i} is of type {type(arg)}")
     return orig_checkpoint(function, *args, **kwargs)
 
 torch.utils.checkpoint.checkpoint = patched_checkpoint
