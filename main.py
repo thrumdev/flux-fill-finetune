@@ -28,6 +28,7 @@ def get_parser():
     parser.add_argument('--save_epochs', type=int, default=1, help='How many epochs between checkpoints (default: 1). 0 indicates no intermediate saves')
     parser.add_argument('--seed', type=int, default=None, help='Random seed (optional, if not set a random one will be generated)')
     parser.add_argument('--gradient_checkpointing', action='store_true', help='Enable gradient checkpointing for transformer')
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help='Number of gradient accumulation steps')
     return parser
 
 
@@ -455,7 +456,10 @@ def main():
         }
     )
 
-    accelerator = Accelerator()
+
+    accelerator = Accelerator(
+        gradient_accumulation_steps=args.gradient_accumulation_steps
+    )
 
     weight_dtype = get_weight_dtype(accelerator)
     print(f"Using weight dtype: {weight_dtype}")
