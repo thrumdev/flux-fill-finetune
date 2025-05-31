@@ -566,7 +566,7 @@ def main():
     optimizer = torch.optim.AdamW(transformer.parameters(), lr=args.lr, fused=True)
     transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
 
-    print(f"Optimizer dtype: {next(optimizer.param_groups[0]['params']).dtype}")
+    print(f"Optimizer dtype: {next(iter(optimizer.param_groups[0]['params'])).dtype}")
 
     # DEBUG: register hoooks to check for dtype mismatches
     if accelerator.is_main_process:
