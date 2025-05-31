@@ -13,6 +13,7 @@ import numpy as np
 import inspect
 import random
 import gc
+import math
 
 from PIL import Image
 
@@ -595,7 +596,11 @@ def main():
     )
 
     num_warmup_steps_for_scheduler = args.lr_warmup_steps * accelerator.num_processes
-    num_training_steps_for_scheduler = args.max_train_steps * accelerator.num_processes
+    len_train_dataloader_after_sharding = math.ceil(len(dataloader) / accelerator.num_processes)
+    num_update_steps_per_epoch = math.ceil(len_train_dataloader_after_sharding / args.gradient_accumulation_steps)
+    num_training_steps_for_scheduler = (
+        args.num_train_epochs * accelerator.num_processes * num_update_steps_per_epoch
+    )
     lr_scheduler = diffusers.optimizer.get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
