@@ -234,6 +234,11 @@ def prepare_latents_and_target(
     latent_image_ids = pipeline._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
 
     image = image.to(device=device, dtype=dtype)
+
+    if accelerator.is_main_process:
+        print(f"before latents image shape: {image.shape}, dtype: {image.dtype}")
+        print(torch.cuda.memory_summary())
+    
     if image.shape[1] != pipeline.latent_channels:
         image_latents = pipeline._encode_vae_image(image=image, generator=None)
     else:
@@ -293,8 +298,6 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
         loss: torch.Tensor
     """
 
-    load_pipeline_heavy(pipeline, device)
-
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -328,6 +331,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
         )
         timesteps, num_inference_steps = pipeline.get_timesteps(num_inference_steps, 1.0, device)
 
+        load_pipeline_heavy(pipeline, device)
+
         # 2. Encode prompts, then offload heavy pipeline modules to CPU to save memory
         (
             prompt_embeds,
@@ -343,6 +348,10 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
             max_sequence_length=512,
             lora_scale=None,
         )
+
+        # Offload heavy pipeline modules to CPU to save memory
+        # This is important to avoid OOM errors during training.
+        offload_pipeline_heavy(pipeline)
 
         prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
         pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=weight_dtype)
@@ -395,10 +404,6 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
 
         t = torch.randint(0, len(timesteps), (1,), device=device)
         timestep = t.expand(latents.shape[0]).to(latents.dtype)
-
-        # Offload heavy pipeline modules to CPU to save memory
-        # This is important to avoid OOM errors during training.
-        offload_pipeline_heavy(pipeline)
 
     # TODO: remove
     debug_type_printing(transformer, latents, masked_image_latents)
