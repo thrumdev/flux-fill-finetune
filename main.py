@@ -99,6 +99,16 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
     transformer.eval()
     val_losses = []
     generated_images: list[wandb.Image] = []
+
+    # Generate validation images.
+    # This requires setting `pipeline.transformer` to the unwrapped transformer model,
+    # and then setting it to `eval`.
+    #
+    # Then at the end we need to set `pipeline.transformer` back to the dummy transformer.
+    pipeline.transformer = accelerator.unwrap_model(transformer)
+    pipeline.transformer.eval()
+    pipeline.transformer.to(accelerator.device, dtype=weight_dtype)
+    
     with torch.no_grad():
         for image, mask, prompt in val_dataloader:
             # Use the same training_step for validation, but do not backprop
@@ -106,19 +116,9 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
             if loss is not None:
                 val_losses.append(loss.item())
 
-            # Generate validation images.
-            # This requires setting `pipeline.transformer` to the unwrapped transformer model,
-            # and then setting it to `eval`.
-            #
-            # Then at the end we need to set `pipeline.transformer` back to the dummy transformer.
-            pipeline.transformer = accelerator.unwrap_model(transformer)
-            pipeline.transformer.eval()
 
             if len(generated_images) >= MAX_VALIDATION_IMAGES:
                 break
-
-            if offload_heavy:
-                pipeline.to(accelerator.device)
 
             height, width = image.shape[2], image.shape[3]
             # Generate images
@@ -141,9 +141,6 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
                     generated_image = generated_image.mode("RGB")
                     wandb_image = wandb.Image(generated_image, caption=single_prompt)
                     generated_images.append(wandb_image)
-                
-            # Set the transformer back to the dummy transformer
-            pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
 
             if offload_heavy:
                 offload_pipeline_heavy(pipeline)
@@ -152,6 +149,9 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=None, off
     log_dict = {"val/loss": avg_val_loss, "val/samples": generated_images if len(generated_images) > 0 else None}
     if epoch is not None:
         log_dict["epoch"] = epoch
+
+    # Set the transformer back to the dummy transformer
+    pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
 
     wandb.log(log_dict)
     accelerator.print(f"Validation{' at epoch ' + str(epoch + 1) if epoch is not None else ''}: avg val loss = {avg_val_loss:.4f}")
@@ -535,7 +535,7 @@ def main():
     # Take the transformer out of the pipeline for training and then send everything else to
     # the accelerator device.
     pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
-    pipeline.to(accelerator.device, dtype=weight_dtype)
+    pipeline.to(accelerator.device)
 
     # explicitly disable gradient tracking for all non-transformer components
     pipeline.vae.requires_grad_(False)
