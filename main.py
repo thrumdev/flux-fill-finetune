@@ -601,7 +601,7 @@ def main():
     num_training_steps_for_scheduler = (
         args.epochs * accelerator.num_processes * num_update_steps_per_epoch
     )
-    lr_scheduler = diffusers.optimizer.get_scheduler(
+    lr_scheduler = diffusers.optimization.get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=num_warmup_steps_for_scheduler,
