@@ -4,6 +4,8 @@ import torch
 
 from torch.utils.checkpoint import checkpoint as orig_checkpoint
 
+accelerator = None
+
 # Patch before everything
 def patched_checkpoint(function, *args, **kwargs):
     # __class__ is always present on Python objects, so this is safe.
@@ -19,7 +21,9 @@ def patched_checkpoint(function, *args, **kwargs):
             print(f"[patched_checkpoint] Arg {i} is a Tensor of type {arg.dtype} with shape {arg.shape}")
         else:
             print(f"[patched_checkpoint] Arg {i} is of type {type(arg)}")
-    return orig_checkpoint(function, *args, **kwargs)
+
+    with accelerator.autocast():
+        return orig_checkpoint(function, *args, **kwargs)
 
 torch.utils.checkpoint.checkpoint = patched_checkpoint
 
@@ -256,6 +260,14 @@ def load_pipeline_heavy(pipeline, device):
     if hasattr(pipeline, "text_encoder_2") and pipeline.text_encoder_2 is not None:
         pipeline.text_encoder_2.to(device)
 
+def debug_type_printing(transformer, latents, masked_image_latents):
+    for n, p in transformer.named_parameters():
+        print(f"model param dtype {n}: {p.dtype}")
+        break  # just check the first one
+
+    print(f"latents dtype: {latents.dtype}, shape: {latents.shape}")
+    print(f"masked_image_latents dtype: {masked_image_latents.dtype}, shape: {masked_image_latents.shape}")
+
 # Runs a training step. returns the loss.
 def training_step(transformer, pipeline, init_image, mask_image, prompt, device):
     """
@@ -372,6 +384,9 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, device)
         # This is important to avoid OOM errors during training.
         offload_pipeline_heavy(pipeline)
 
+    # TODO: remove
+    debug_type_printing(transformer, latents, masked_image_latents)
+
     # 6. Forward pass through the transformer. Everything from here on will be gradient-tracked.
     noise_pred = transformer(
         hidden_states=torch.cat((latents, masked_image_latents), dim=2),
@@ -421,8 +436,8 @@ def register_hooks(model):
 
     def check_dtype_hook(name):
         def hook(_, __, output):
-            if isinstance(output, torch.Tensor) and output.dtype != torch.bfloat16:
-                print(f"[dtype mismatch] {name}: {output.shape} {output.dtype}")
+            if isinstance(output, torch.Tensor):
+                print(f"[dtype check] {name}: {output.shape} {output.dtype}")
         return hook
 
     for name, module in model.named_modules():
@@ -432,6 +447,8 @@ def register_hooks(model):
 
 
 def main():
+    global accelerator
+
     parser = get_parser()
     args = parser.parse_args()
 
