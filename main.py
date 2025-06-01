@@ -89,6 +89,35 @@ def parse_args_with_config():
     args = parser.parse_args()
     return args
 
+def enable_lpips_gradient_checkpointing(lpips_model):
+    """
+    Monkey-patch LPIPS to enable gradient checkpointing for its feature network.
+    This wraps each feature block in torch.utils.checkpoint.checkpoint.
+    """
+
+    def monkey_patch_block(block):
+        if isinstance(block, torch.nn.Module):
+            if not hasattr(block, "_original_forward"):
+                block._original_forward = block.forward
+                block.forward = lambda *inputs, **kwargs: torch.utils.checkpoint.checkpoint(
+                    block._original_forward, *inputs, **kwargs
+                )
+    
+    # patch underlying net
+    monkey_patch_block(lpips_model.net.slice1)
+    monkey_patch_block(lpips_model.net.slice2)
+    monkey_patch_block(lpips_model.net.slice3)
+    monkey_patch_block(lpips_model.net.slice4)
+    monkey_patch_block(lpips_model.net.slice5)
+
+    # patch lpips linear interpolation layers.
+    monkey_patch_block(lpips_model.lin0)
+    monkey_patch_block(lpips_model.lin1)
+    monkey_patch_block(lpips_model.lin2)
+    monkey_patch_block(lpips_model.lin3)
+    monkey_patch_block(lpips_model.lin4)
+
+    return lpips_model
 
 class FluxFillDataset(Dataset):
     def __init__(self, root_dir):
@@ -679,6 +708,7 @@ def main():
             transformer.enable_gradient_checkpointing()
             if args.pixel_loss_weight > 0:
                 pipeline.vae.enable_gradient_checkpointing()
+                enable_lpips_gradient_checkpointing(pipeline.lpips_loss)
         else:
             print("Warning: transformer does not support gradient checkpointing.")
 
