@@ -8,3 +8,4 @@ numpy
 sentencepiece
 tqdm
 pyyaml
+lpips
