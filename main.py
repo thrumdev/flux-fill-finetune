@@ -1,6 +1,7 @@
 import os
 import argparse
 import torch
+import re
 
 from torch.utils.checkpoint import checkpoint as orig_checkpoint
 from accelerate import Accelerator
@@ -53,6 +54,13 @@ def get_parser():
         default=1,
         help="Number of hard resets of the lr in cosine_with_restarts scheduler.",
     )
+    parser.add_argument(
+        '--trainable_params',
+        type=str,
+        nargs='*',
+        default=[r'.*'],
+        help='Regex or list of regexes to select trainable parameters by name. Default: all parameters.'
+    )
     return parser
 
 
@@ -98,6 +106,24 @@ def get_weight_dtype(accelerator):
         return torch.bfloat16
     else:
         return torch.float32
+    
+def get_trainable_params(model, patterns):
+    """
+    Given a model and a list of regex patterns, return a list of parameters whose names match any pattern.
+    """
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    param_name_to_param = dict(model.named_parameters())
+    trainable_param_names = set()
+    for pattern in patterns:
+        regex = re.compile(pattern)
+        for name in param_name_to_param:
+            if regex.fullmatch(name) or regex.search(name):
+                trainable_param_names.add(name)
+    trainable_params = [param for name, param in param_name_to_param.items() if name in trainable_param_names]
+    if not trainable_params:
+        raise ValueError(f"No trainable parameters matched the provided regex(es): {patterns}")
+    return trainable_params
     
 class DummyTransformer(torch.nn.Module):
     def __init__(self, dtype=torch.float32):
@@ -571,6 +597,9 @@ def main():
 
     pipeline.training_scheduler = copy.deepcopy(pipeline.scheduler)
 
+    # Select trainable parameters using regexes from args.trainable_params
+    trainable_params = get_trainable_params(transformer, args.trainable_params)
+
     if args.gradient_checkpointing:
         print("Enabling gradient checkpointing for transformer...")
         if hasattr(transformer, 'enable_gradient_checkpointing'):
@@ -586,8 +615,8 @@ def main():
     val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=collate_fn)
 
     optimizer = torch.optim.AdamW(
-        transformer.parameters(), 
-        lr=args.lr, 
+        trainable_params,
+        lr=args.lr,
         fused=True,
     )
 
