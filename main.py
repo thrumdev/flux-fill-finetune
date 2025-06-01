@@ -168,7 +168,7 @@ def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-
     
     weight_dtype = get_weight_dtype(accelerator)
 
-    print(f"Validating at epoch {epoch}...")
+    print(f"Validating at epoch {epoch + 1}...")
 
     transformer.eval()
     val_losses = []
@@ -189,7 +189,7 @@ def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-
                 # Use the same training_step for validation, but do not backprop
                 loss = training_step(transformer, pipeline, image, mask, prompt, weight_dtype, accelerator.device, config)
                 if loss is not None:
-                    val_losses.append(loss.item())
+                    val_losses.append(loss)
 
                 if len(generated_images) >= MAX_VALIDATION_IMAGES:
                     continue
@@ -211,8 +211,16 @@ def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-
                     wandb_image = wandb.Image(generated_image, caption=single_prompt)
                     generated_images.append(wandb_image)
 
-    avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('nan')
-    log_dict = {"val/loss": avg_val_loss, "val/samples": generated_images if len(generated_images) > 0 else None}
+    n = len(val_losses)
+    avg_val_loss = sum([v["loss"].item() for v in val_losses]) / n if n > 0 else float('nan')
+    avg_mse_loss = sum([v["mse_loss"].item() for v in val_losses]) / n if n > 0 else float('nan')
+    avg_pixel_loss = sum([v["pixel_loss"].item() for v in val_losses]) / n if n > 0 else float('nan')
+    log_dict = {
+        "val/loss": avg_val_loss, 
+        "val/mse_loss": avg_mse_loss,
+        "val/pixel_loss": avg_pixel_loss,
+        "val/samples": generated_images if len(generated_images) > 0 else None,
+    }
     log_dict["epoch"] = epoch
 
     # Set the transformer back to the dummy transformer
@@ -222,7 +230,8 @@ def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-
         offload_pipeline_heavy(pipeline)
 
     wandb.log(log_dict)
-    accelerator.print(f"Validation{' at epoch ' + str(epoch + 1) if epoch is not None else ''}: avg val loss = {avg_val_loss:.4f}")
+    accelerator.print(f"Validation{' at epoch ' + str(epoch + 1) if epoch is not None else ''}:")
+    accelerator.print(f"\tavg. loss total= {avg_val_loss:.4f} mse= {avg_mse_loss:.4f} pixel= {avg_pixel_loss:.4f}")
     transformer.train()
 
 def load_flux_fill(dtype):
@@ -464,7 +473,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
     )
 
     # 7. Compute loss
-    loss = compute_loss(
+    return compute_loss(
         config, 
         pipeline, 
         noise_pred, 
@@ -474,7 +483,6 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
         noisy_latents, 
         clean_latents,
     )
-    return loss
 
 def vae_scale_mask(mask, pipeline):
     height, width = mask.shape[2], mask.shape[3]
@@ -576,7 +584,12 @@ def compute_loss(
     else:
         pixel_loss = 0
 
-    return config.mse_loss_weight * mask_weighted_mse_loss + config.pixel_loss_weight * pixel_loss
+    total_loss = config.mse_loss_weight * mask_weighted_mse_loss + config.pixel_loss_weight * pixel_loss
+    return {
+        "loss": total_loss,
+        "mse_loss": mask_weighted_mse_loss,
+        "pixel_loss": pixel_loss,
+    }
 
 def collate_fn(batch):
     images, masks, prompts = zip(*batch)
@@ -714,7 +727,7 @@ def main():
                 if loss is None:
                     raise RuntimeError("training_step returned None. Check implementation.")
                 
-                accelerator.backward(loss)
+                accelerator.backward(loss["loss"])
                 # Only step optimizer and zero grad when gradients are synced (i.e., after accumulation)
                 if accelerator.sync_gradients:
                     torch.cuda.empty_cache()  # Clear cache to avoid OOM errors
@@ -725,7 +738,14 @@ def main():
             # Log loss and learning rate to wandb (log only on main process and after accumulation step)
             if accelerator.is_main_process and accelerator.sync_gradients:
                 lr = lr_scheduler.get_last_lr()[0]
-                wandb.log({"train/loss": loss.item(), "train/lr": lr, "epoch": epoch, "step": step})
+                wandb.log({
+                    "train/loss": loss["loss"].item(), 
+                    "train/mse_loss": loss["mse_loss"].item(),
+                    "train/pixel_loss": loss["pixel_loss"].item(),
+                    "train/lr": lr, 
+                    "train/step": step,
+                    "epoch": epoch, 
+                })
 
         # Validation logic
         is_last_epoch = (epoch + 1) == args.epochs
