@@ -503,12 +503,12 @@ def compute_loss(
         # (B, 1, H', W') -> (B, latent_channels, H', W')
         mask_latent_sized = vae_scale_mask(mask_image, pipeline).expand_as(noise_pred)
 
-    # weight the masked portions higher in the loss.
-    weighted_latent_mask = (mask_latent_sized * config.mask_loss_weight) + (1 - mask_latent_sized)
+        # weight the masked portions higher in the loss.
+        weighted_latent_mask = (mask_latent_sized * config.mask_loss_weight) + (1 - mask_latent_sized)
+        mask_weighted_target = target * weighted_latent_mask
 
     # apply the mask weight to the noise prediction and target
     mask_weighted_noise_pred = noise_pred * weighted_latent_mask
-    mask_weighted_target = target * weighted_latent_mask
     mask_weighted_mse_loss = torch.mean(
         ((mask_weighted_noise_pred.float() - mask_weighted_target.float()) ** 2).reshape(target.shape[0], -1),
         1,
@@ -527,19 +527,19 @@ def compute_loss(
         model_noised_latents = (1.0 - sigmas) * clean_latents + sigmas * noise_pred
         predicted_pixels = pipeline.vae.decode(model_noised_latents, return_dict=False)[0]
 
-        weighted_mask = mask_image * config.mask_loss_weight + (1 - mask_image)
-
         with torch.no_grad():
+            weighted_mask = mask_image * config.mask_loss_weight + (1 - mask_image)
             noisy_image = pipeline.vae.decode(noisy_latents, return_dict=False)[0]
 
-        # get the batch indices of sigmas where the sigma is below the pixel loss noise threshold.
-        # note that sigmas is a (B, 1, 1, 1) tensor,
-        # as a single-dim tensor, this will be a (B,) tensor.
-        active_batch_indices = (sigmas <= config.pixel_loss_noise_threshold).nonzero(as_tuple=False).view(-1)
-        # remove the batch indices from the predicted pixels, noisy image, and weighted mask.
+            # get the batch indices of sigmas where the sigma is below the pixel loss noise threshold.
+            # note that sigmas is a (B, 1, 1, 1) tensor,
+            # as a single-dim tensor, this will be a (B,) tensor.
+            active_batch_indices = (sigmas <= config.pixel_loss_noise_threshold).nonzero(as_tuple=False).view(-1)
+            # remove the batch indices from the predicted pixels, noisy image, and weighted mask.
+            weighted_mask = weighted_mask[active_batch_indices]         
+            noisy_image = noisy_image[active_batch_indices]
+
         predicted_pixels = predicted_pixels[active_batch_indices]
-        noisy_image = noisy_image[active_batch_indices]
-        weighted_mask = weighted_mask[active_batch_indices]         
 
         if active_batch_indices.numel() > 0:
             # note: shape here is (B, 1, H, W) only because Spatial LPIPS is used.
