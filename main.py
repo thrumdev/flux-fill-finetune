@@ -17,6 +17,7 @@ import random
 import gc
 import math
 import copy
+import lpips
 
 from PIL import Image
 
@@ -41,6 +42,8 @@ def get_parser():
     parser.add_argument('--mask_loss_weight', type=float, default=5.0, help='Weight multiplier for the masked area in the loss (default: 5.0)')
     parser.add_argument('--mse_loss_weight', type=float, default=0.8, help='Weighting of the MSE loss in the total loss (default: 0.8)')
     parser.add_argument('--pixel_loss_weight', type=float, default=0.2, help='Weighting of the LPIPS (pixel) loss in the total loss (default: 0.2)')
+
+    parser.add_argument('--pixel_loss_noise_threshold', type=float, default=0.5, help='Noise threshold (sigma) below which pixel/LPIPS loss is applied (default: 0.5). Currently unused.')
 
     parser.add_argument(
         "--lr_scheduler",
@@ -282,7 +285,7 @@ def get_sigmas(scheduler, timesteps, n_dim=4):
 
 def prepare_latents_and_target(
     pipeline,
-    image,
+    image_latents,
     timesteps,
     batch_size,
     num_channels_latents,
@@ -302,25 +305,7 @@ def prepare_latents_and_target(
         dtype,
     )
 
-    image = image.to(device=device, dtype=dtype)
-
-    if image.shape[1] != pipeline.latent_channels:
-        image_latents = pipeline._encode_vae_image(image=image, generator=None)
-    else:
-        image_latents = image
-    if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
-        # expand init_latents for batch_size
-        additional_image_per_prompt = batch_size // image_latents.shape[0]
-        image_latents = torch.cat([image_latents] * additional_image_per_prompt, dim=0)
-    elif batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] != 0:
-        raise ValueError(
-            f"Cannot duplicate `image` of batch size {image_latents.shape[0]} to {batch_size} text prompts."
-        )
-    else:
-        image_latents = torch.cat([image_latents], dim=0)
-
     noise = torch.randn_like(image_latents, device=device)
-
 
     target = noise - image_latents
 
@@ -335,7 +320,7 @@ def prepare_latents_and_target(
         height=noisy_latents.shape[2],
         width=noisy_latents.shape[3]
     )
-    return packed_noisy_latents, latent_image_ids, target
+    return noisy_latents, packed_noisy_latents, latent_image_ids, target
 
 def offload_pipeline_heavy(pipeline):
     """
@@ -414,9 +399,10 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
         num_channels_latents = pipeline.vae.config.latent_channels
         height, width = init_image.shape[2], init_image.shape[3]
 
-        latents, latent_image_ids, target = prepare_latents_and_target(
+        clean_latents = pipeline._encode_vae_image(image=init_image, generator=None)
+        noisy_latents, packed_noisy_latents, latent_image_ids, target = prepare_latents_and_target(
             pipeline,
-            init_image,
+            clean_latents,
             timesteps,
             batch_size,
             num_channels_latents,
@@ -453,13 +439,13 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
         # 5. handle guidance
         if pipeline.guidance_embeds:
             guidance = torch.full([1], guidance_scale, device=device, dtype=weight_dtype)
-            guidance = guidance.expand(latents.shape[0])
+            guidance = guidance.expand(packed_noisy_latents.shape[0])
         else:
             guidance = None
 
     # 6. Forward pass through the transformer. Everything from here on will be gradient-tracked.
     noise_pred = transformer(
-        hidden_states=torch.cat((latents, masked_image_latents), dim=2),
+        hidden_states=torch.cat((packed_noisy_latents, masked_image_latents), dim=2),
         timestep=timesteps / 1000,
         guidance=guidance,
         pooled_projections=pooled_prompt_embeds,
@@ -478,7 +464,16 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
     )
 
     # 7. Compute loss
-    loss = compute_loss(config, pipeline, noise_pred, target, init_image, mask_image)
+    loss = compute_loss(
+        config, 
+        pipeline, 
+        noise_pred, 
+        target, 
+        timesteps, 
+        mask_image, 
+        noisy_latents, 
+        clean_latents,
+    )
     return loss
 
 def vae_scale_mask(mask, pipeline):
@@ -493,7 +488,16 @@ def vae_scale_mask(mask, pipeline):
 
     return mask
 
-def compute_loss(config, pipeline, noise_pred, target, init_image, mask_image):
+def compute_loss(
+    config, 
+    pipeline, 
+    noise_pred, 
+    target,
+    timesteps, 
+    mask_image, 
+    noisy_latents,
+    clean_latents,
+):
     with torch.no_grad():
         # Reshape mask_latent_sized to have the same number of channels as noise_pred and target
         # (B, 1, H', W') -> (B, latent_channels, H', W')
@@ -511,7 +515,46 @@ def compute_loss(config, pipeline, noise_pred, target, init_image, mask_image):
     )
     mask_weighted_mse_loss = mask_weighted_mse_loss.mean()
 
-    return mask_weighted_mse_loss
+    if config.pixel_loss_weight > 0:
+        with torch.no_grad():
+            sigmas = get_sigmas(
+                pipeline.training_scheduler, 
+                timesteps, 
+                n_dim=len(noisy_latents.shape)
+            ).to(noisy_latents.device)
+
+        # Decode the noise prediction to get the pixel space prediction
+        model_noised_latents = (1.0 - sigmas) * clean_latents + sigmas * noise_pred
+        predicted_pixels = pipeline.vae.decode(model_noised_latents, return_dict=False)[0]
+
+        weighted_mask = mask_image * config.mask_loss_weight + (1 - mask_image)
+
+        with torch.no_grad():
+            noisy_image = pipeline.vae.decode(noisy_latents, return_dict=False)[0]
+
+        # get the batch indices of sigmas where the sigma is below the pixel loss noise threshold.
+        # note that sigmas is a (B, 1, 1, 1) tensor,
+        # as a single-dim tensor, this will be a (B,) tensor.
+        active_batch_indices = (sigmas <= config.pixel_loss_noise_threshold).nonzero(as_tuple=False).view(-1)
+        # remove the batch indices from the predicted pixels, noisy image, and weighted mask.
+        predicted_pixels = predicted_pixels[active_batch_indices]
+        noisy_image = noisy_image[active_batch_indices]
+        weighted_mask = weighted_mask[active_batch_indices]         
+
+        if active_batch_indices.numel() > 0:
+            # note: shape here is (B, 1, H, W) only because Spatial LPIPS is used.
+            pixel_loss = pipeline.lpips_loss(predicted_pixels, noisy_image)
+            # apply the weighted mask to the pixel loss
+            pixel_loss = pixel_loss * weighted_mask
+            pixel_loss = pixel_loss.mean()
+        else:
+            # If no active batch indices, return 0 loss
+            pixel_loss = 0
+
+    else:
+        pixel_loss = 0
+
+    return config.mse_loss_weight * mask_weighted_mse_loss + config.pixel_loss_weight * pixel_loss
 
 def collate_fn(batch):
     images, masks, prompts = zip(*batch)
@@ -586,6 +629,9 @@ def main():
     pipeline.text_encoder_2.requires_grad_(False)
 
     pipeline.training_scheduler = copy.deepcopy(pipeline.scheduler)
+
+    # Spatial means that the LPIPS loss will be computed per-pixel
+    pipeline.lpips_loss = lpips.LPIPS(net='vgg', spatial=True).to(accelerator.device)
 
     # Select trainable parameters using regexes from args.trainable_params
     trainable_params = get_trainable_params(transformer, args.trainable_params)

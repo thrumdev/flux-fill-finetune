@@ -17,3 +17,7 @@ lr_warmup_steps: 500
 lr_num_cycles: 1
 trainable_params:
   - ".*"
+mask_loss_weight: 5.0
+mse_loss_weight: 0.8
+pixel_loss_weight: 0.2
+pixel_loss_noise_threshold: 0.5
