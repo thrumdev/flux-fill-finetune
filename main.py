@@ -2,6 +2,7 @@ import os
 import argparse
 import torch
 import re
+import yaml
 
 from torch.utils.checkpoint import checkpoint as orig_checkpoint
 from accelerate import Accelerator
@@ -24,6 +25,7 @@ from diffusers import FluxFillPipeline
 
 def get_parser():
     parser = argparse.ArgumentParser(description="Accelerate Training Loop with wandb")
+    parser.add_argument('--config', type=str, help='Path to config YAML file')
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
@@ -61,7 +63,24 @@ def get_parser():
         default=[r'.*'],
         help='Regex or list of regexes to select trainable parameters by name. Default: all parameters.'
     )
+
     return parser
+
+def parse_args_with_config():
+    parser = get_parser()
+    # Parse only --config first
+    args, remaining_argv = parser.parse_known_args()
+    defaults = {}
+    if getattr(args, 'config', None):
+        with open(args.config, 'r') as f:
+            config = yaml.safe_load(f)
+            if config:
+                defaults.update(config)
+    # Rebuild parser with defaults from config
+    parser = get_parser()
+    parser.set_defaults(**defaults)
+    args = parser.parse_args()
+    return args
 
 
 class FluxFillDataset(Dataset):
@@ -536,8 +555,7 @@ def collate_fn(batch):
 def main():
     torch.utils.checkpoint.set_checkpoint_debug_enabled(True)
 
-    parser = get_parser()
-    args = parser.parse_args()
+    args = parse_args_with_config()
 
     # Set or generate random seed
     if args.seed is not None:
