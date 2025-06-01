@@ -30,8 +30,8 @@ def get_parser():
     parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size for training')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
-    parser.add_argument('--wandb_name', type=str, required=True, help='wandb run name')
-    parser.add_argument('--wandb_project', type=str, required=True, help='wandb project name (umbrella for runs)')
+    parser.add_argument('--wandb_name', type=str, help='wandb run name')
+    parser.add_argument('--wandb_project', type=str, help='wandb project name (umbrella for runs)')
     parser.add_argument('--validation_epochs', type=int, default=1, help='How often (in epochs) to run validation')
     parser.add_argument('--save_epochs', type=int, default=1, help='How many epochs between checkpoints (default: 1). 0 indicates no intermediate saves')
     parser.add_argument('--seed', type=int, default=None, help='Random seed (optional, if not set a random one will be generated)')
@@ -229,7 +229,8 @@ def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-
     if config.offload_heavy_encoders:
         offload_pipeline_heavy(pipeline)
 
-    wandb.log(log_dict)
+    if wandb.run is not None:
+        wandb.log(log_dict)
     accelerator.print(f"Validation{' at epoch ' + str(epoch + 1) if epoch is not None else ''}:")
     accelerator.print(f"\tavg. loss total= {avg_val_loss:.4f} mse= {avg_mse_loss:.4f} pixel= {avg_pixel_loss:.4f}")
     transformer.train()
@@ -625,19 +626,20 @@ def main():
     # You can set drop_last=True below if needed.
 
     # Initialize Weights & Biases with additional config
-    wandb.init(
-        project=args.wandb_project,
-        name=args.wandb_name,
-        config={
-            "epochs": args.epochs,
-            "batch_size": args.batch_size,
-            "lr": args.lr,
-            "validation_epochs": args.validation_epochs,
-            "save_epochs": args.save_epochs,
-            "seed": seed,
-            "drop_last": False,  # default, see above
-        }
-    )
+    if args.wandb_name is not None and args.wandb_project is not None:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_name,
+            config={
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "lr": args.lr,
+                "validation_epochs": args.validation_epochs,
+                "save_epochs": args.save_epochs,
+                "seed": seed,
+                "drop_last": False,  # default, see above
+            }
+        )
 
 
     accelerator = Accelerator(
@@ -738,14 +740,15 @@ def main():
             # Log loss and learning rate to wandb (log only on main process and after accumulation step)
             if accelerator.is_main_process and accelerator.sync_gradients:
                 lr = lr_scheduler.get_last_lr()[0]
-                wandb.log({
-                    "train/loss": loss["loss"].item(), 
-                    "train/mse_loss": loss["mse_loss"].item(),
-                    "train/pixel_loss": loss["pixel_loss"].item(),
-                    "train/lr": lr, 
-                    "train/step": step,
-                    "epoch": epoch, 
-                })
+                if wandb.run is not None:
+                    wandb.log({
+                        "train/loss": loss["loss"].item(), 
+                        "train/mse_loss": loss["mse_loss"].item(),
+                        "train/pixel_loss": loss["pixel_loss"].item(),
+                        "train/lr": lr, 
+                        "train/step": step,
+                        "epoch": epoch, 
+                    })
 
         # Validation logic
         is_last_epoch = (epoch + 1) == args.epochs
