@@ -488,6 +488,23 @@ def vae_scale_mask(mask, pipeline):
 
     return mask
 
+def get_mask_loss_weight_by_ratio(mask_image):
+    # input mask_image is a tensor of shape (B, 1, H, W)
+    # returns a weight tensor that has shape (B,) where each item is the reciprocal of the ratio
+    # of the number of masked pixels to the total number of pixels in the mask
+
+    h, w = mask_image.shape[2], mask_image.shape[3]
+    # first combine dims 1, 2, 3 into a single dim
+    mask_image_flat = mask_image.view(mask_image.shape[0], -1)  # (B, H*W)
+    # count the number of masked pixels (where mask_image_flat > 0)
+    num_masked_pixels = mask_image_flat.sum(dim=1)  # (B,)
+    # set num_masked_pixels to minimum of 1 to avoid division by zero, though empty masks aren't 
+    # expected in practice.
+    num_masked_pixels = torch.clamp(num_masked_pixels, min=1.0)  # (B,)
+    # compute the weight as the reciprocal of the ratio of masked pixels to total pixels
+    mask_weight = (h * w) / num_masked_pixels
+    return mask_weight
+
 def compute_loss(
     config, 
     pipeline, 
@@ -503,8 +520,13 @@ def compute_loss(
         # (B, 1, H', W') -> (B, latent_channels, H', W')
         mask_latent_sized = vae_scale_mask(mask_image, pipeline).expand_as(noise_pred)
 
+        # Compute mask loss weight based on the ratio of masked pixels
+        mask_loss_weight = get_mask_loss_weight_by_ratio(mask_image) * config.mask_loss_weight
+        # Reshape to (B, 1, 1, 1) for broadcasting across the batch dimension
+        mask_loss_weight = mask_loss_weight.view(-1, 1, 1, 1) 
+
         # weight the masked portions higher in the loss.
-        weighted_latent_mask = (mask_latent_sized * config.mask_loss_weight) + (1 - mask_latent_sized)
+        weighted_latent_mask = (mask_latent_sized * mask_loss_weight) + (1 - mask_latent_sized)
         mask_weighted_target = target * weighted_latent_mask
 
     # apply the mask weight to the noise prediction and target
@@ -528,7 +550,7 @@ def compute_loss(
         predicted_pixels = pipeline.vae.decode(model_noised_latents, return_dict=False)[0]
 
         with torch.no_grad():
-            weighted_mask = mask_image * config.mask_loss_weight + (1 - mask_image)
+            weighted_mask = mask_image * mask_loss_weight + (1 - mask_image)
             noisy_image = pipeline.vae.decode(noisy_latents, return_dict=False)[0]
 
             # get the batch indices of sigmas where the sigma is below the pixel loss noise threshold.
