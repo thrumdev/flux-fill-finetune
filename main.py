@@ -14,6 +14,7 @@ import inspect
 import random
 import gc
 import math
+import copy
 
 from PIL import Image
 
@@ -275,14 +276,13 @@ def select_timesteps(batch_size, pipeline):
         logit_std=1.0,
         mode_scale=1.29,
     )
-    indices = (u * pipeline.scheduler.config.num_train_timesteps).long()
-    timesteps = pipeline.scheduler.timesteps[indices]
+    indices = (u * pipeline.training_scheduler.config.num_train_timesteps).long()
+    timesteps = pipeline.training_scheduler.timesteps[indices]
     return timesteps
 
 def get_sigmas(scheduler, timesteps, n_dim=4):
     sigmas = scheduler.sigmas
-    schedule_timesteps = scheduler.timesteps
-    timesteps = timesteps
+    schedule_timesteps = scheduler.timesteps.to(timesteps.device)
     step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
 
     sigma = sigmas[step_indices].flatten()
@@ -302,7 +302,15 @@ def prepare_latents_and_target(
     device,
 ):
     shape = (batch_size, num_channels_latents, height, width)
-    latent_image_ids = pipeline._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
+    height = 2 * (int(height) // (pipeline.vae_scale_factor * 2))
+    width = 2 * (int(width) // (pipeline.vae_scale_factor * 2))
+    latent_image_ids = pipeline._prepare_latent_image_ids(
+        batch_size, 
+        height // 2, 
+        width // 2, 
+        device, 
+        dtype,
+    )
 
     image = image.to(device=device, dtype=dtype)
 
@@ -321,14 +329,14 @@ def prepare_latents_and_target(
     else:
         image_latents = torch.cat([image_latents], dim=0)
 
-    noise = torch.randn(shape, dtype=dtype, device=device)
+    noise = torch.randn_like(image_latents, device=device)
+
 
     target = noise - image_latents
 
     # add noise
-    sigmas = get_sigmas(pipeline.scheduler, timesteps, n_dim=len(shape))
+    sigmas = get_sigmas(pipeline.training_scheduler, timesteps, n_dim=len(shape)).to(device)
     noisy_latents = (1.0 - sigmas) * image_latents + sigmas * noise
-
 
     packed_noisy_latents = pipeline._pack_latents(
         noisy_latents,                    
@@ -354,12 +362,6 @@ def load_pipeline_heavy(pipeline, device):
     """
     if hasattr(pipeline, "text_encoder_2") and pipeline.text_encoder_2 is not None:
         pipeline.text_encoder_2.to(device)
-
-def debug_type_printing(transformer, latents, masked_image_latents):
-    print(f"model param dtype: {next(transformer.parameters()).dtype}")
-
-    print(f"latents dtype: {latents.dtype}, shape: {latents.shape}")
-    print(f"masked_image_latents dtype: {masked_image_latents.dtype}, shape: {masked_image_latents.shape}")
 
 # Runs a training step. returns the loss.
 def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_dtype, device, offload_heavy_encoders):
@@ -388,15 +390,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
 
         init_image = pipeline.image_processor.preprocess(init_image, height=height, width=width)
         
-        # 1. Choose a random timestep for the entire batch.
-        image_seq_len = (int(height) // pipeline.vae_scale_factor // 2) * (int(width) // pipeline.vae_scale_factor // 2)
-        mu = calculate_shift(
-            image_seq_len,
-            pipeline.scheduler.config.get("base_image_seq_len", 256),
-            pipeline.scheduler.config.get("max_image_seq_len", 4096),
-            pipeline.scheduler.config.get("base_shift", 0.5),
-            pipeline.scheduler.config.get("max_shift", 1.15),
-        )
+        # 1. Choose random timesteps for the entire batch.
         timesteps = select_timesteps(batch_size, pipeline).to(device=device)
 
         if offload_heavy_encoders:
@@ -488,8 +482,8 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
 
     noise_pred = pipeline._unpack_latents(
         noise_pred,
-        height=latents.shape[2] * pipeline.vae_scale_factor,
-        width=latents.shape[3]* pipeline.vae_scale_factor,
+        height=target.shape[2] * pipeline.vae_scale_factor,
+        width=target.shape[3] * pipeline.vae_scale_factor,
         vae_scale_factor=pipeline.vae_scale_factor,
     )
 
@@ -574,6 +568,8 @@ def main():
     pipeline.vae.requires_grad_(False)
     pipeline.text_encoder.requires_grad_(False)
     pipeline.text_encoder_2.requires_grad_(False)
+
+    pipeline.training_scheduler = copy.deepcopy(pipeline.scheduler)
 
     if args.gradient_checkpointing:
         print("Enabling gradient checkpointing for transformer...")
