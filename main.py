@@ -504,7 +504,7 @@ def get_mask_loss_weight_by_ratio(mask_image):
 
     h, w = mask_image.shape[2], mask_image.shape[3]
     # first combine dims 1, 2, 3 into a single dim
-    mask_image_flat = mask_image.view(mask_image.shape[0], -1)  # (B, H*W)
+    mask_image_flat = mask_image.reshape(mask_image.shape[0], -1)  # (B, H*W)
     # count the number of masked pixels (where mask_image_flat > 0)
     num_masked_pixels = mask_image_flat.sum(dim=1)  # (B,)
     # set num_masked_pixels to minimum of 1 to avoid division by zero, though empty masks aren't 
@@ -532,7 +532,7 @@ def compute_loss(
         # Compute mask loss weight based on the ratio of masked pixels
         mask_loss_weight = get_mask_loss_weight_by_ratio(mask_image) * config.mask_loss_weight
         # Reshape to (B, 1, 1, 1) for broadcasting across the batch dimension
-        mask_loss_weight = mask_loss_weight.view(-1, 1, 1, 1) 
+        mask_loss_weight = mask_loss_weight.reshape(-1, 1, 1, 1) 
 
         # weight the masked portions higher in the loss.
         weighted_latent_mask = (mask_latent_sized * mask_loss_weight) + (1 - mask_latent_sized)
@@ -565,7 +565,7 @@ def compute_loss(
             # get the batch indices of sigmas where the sigma is below the pixel loss noise threshold.
             # note that sigmas is a (B, 1, 1, 1) tensor,
             # as a single-dim tensor, this will be a (B,) tensor.
-            active_batch_indices = (sigmas <= config.pixel_loss_noise_threshold).nonzero(as_tuple=False).view(-1)
+            active_batch_indices = (sigmas <= config.pixel_loss_noise_threshold).nonzero(as_tuple=False).reshape(-1)
             # remove the batch indices from the predicted pixels, noisy image, and weighted mask.
             weighted_mask = weighted_mask[active_batch_indices]         
             noisy_image = noisy_image[active_batch_indices]
@@ -677,6 +677,8 @@ def main():
         print("Enabling gradient checkpointing for transformer...")
         if hasattr(transformer, 'enable_gradient_checkpointing'):
             transformer.enable_gradient_checkpointing()
+            if args.pixel_loss_weight > 0:
+                pipeline.vae.enable_gradient_checkpointing()
         else:
             print("Warning: transformer does not support gradient checkpointing.")
 
