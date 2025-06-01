@@ -212,9 +212,9 @@ def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-
                     generated_images.append(wandb_image)
 
     n = len(val_losses)
-    avg_val_loss = sum([v["loss"].item() for v in val_losses]) / n if n > 0 else float('nan')
-    avg_mse_loss = sum([v["mse_loss"].item() for v in val_losses]) / n if n > 0 else float('nan')
-    avg_pixel_loss = sum([v["pixel_loss"].item() for v in val_losses]) / n if n > 0 else float('nan')
+    avg_val_loss = sum([v["loss"] for v in val_losses]) / n if n > 0 else float('nan')
+    avg_mse_loss = sum([v["mse_loss"] for v in val_losses]) / n if n > 0 else float('nan')
+    avg_pixel_loss = sum([v["pixel_loss"] for v in val_losses]) / n if n > 0 else float('nan')
     log_dict = {
         "val/loss": avg_val_loss, 
         "val/mse_loss": avg_mse_loss,
@@ -742,9 +742,9 @@ def main():
                 lr = lr_scheduler.get_last_lr()[0]
                 if wandb.run is not None:
                     wandb.log({
-                        "train/loss": loss["loss"].item(), 
-                        "train/mse_loss": loss["mse_loss"].item(),
-                        "train/pixel_loss": loss["pixel_loss"].item(),
+                        "train/loss": loss["loss"], 
+                        "train/mse_loss": loss["mse_loss"],
+                        "train/pixel_loss": loss["pixel_loss"],
                         "train/lr": lr, 
                         "train/step": step,
                         "epoch": epoch, 
