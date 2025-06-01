@@ -481,14 +481,37 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
     loss = compute_loss(config, pipeline, noise_pred, target, init_image, mask_image)
     return loss
 
+def vae_scale_mask(mask, pipeline):
+    height, width = mask.shape[2], mask.shape[3]
+    height = 2 * (int(height) // (pipeline.vae_scale_factor * 2))
+    width = 2 * (int(width) // (pipeline.vae_scale_factor * 2))
+
+    # Scale the mask to the VAE latent size. Input is (B, 1, H, W), output is (B, 1, H', W')
+    mask = torchvision.transforms.functional.resize(
+        mask, (height, width), interpolation=torchvision.transforms.InterpolationMode.BILINEAR
+    )
+
+    return mask
+
 def compute_loss(config, pipeline, noise_pred, target, init_image, mask_image):
-    mse_loss = torch.mean(
-        ((noise_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
+    with torch.no_grad():
+        # Reshape mask_latent_sized to have the same number of channels as noise_pred and target
+        # (B, 1, H', W') -> (B, latent_channels, H', W')
+        mask_latent_sized = vae_scale_mask(mask_image, pipeline).expand_as(noise_pred)
+
+    # weight the masked portions higher in the loss.
+    weighted_latent_mask = (mask_latent_sized * config.mask_loss_weight) + (1 - mask_latent_sized)
+
+    # apply the mask weight to the noise prediction and target
+    mask_weighted_noise_pred = noise_pred * weighted_latent_mask
+    mask_weighted_target = target * weighted_latent_mask
+    mask_weighted_mse_loss = torch.mean(
+        ((mask_weighted_noise_pred.float() - mask_weighted_target.float()) ** 2).reshape(target.shape[0], -1),
         1,
     )
-    mse_loss = mse_loss.mean()
+    mask_weighted_mse_loss = mask_weighted_mse_loss.mean()
 
-    return mse_loss
+    return mask_weighted_mse_loss
 
 def collate_fn(batch):
     images, masks, prompts = zip(*batch)
