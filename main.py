@@ -99,9 +99,11 @@ def enable_lpips_gradient_checkpointing(lpips_model):
         if isinstance(block, torch.nn.Module):
             if not hasattr(block, "_original_forward"):
                 block._original_forward = block.forward
-                block.forward = lambda *inputs, **kwargs: torch.utils.checkpoint.checkpoint(
-                    block._original_forward, *inputs, **kwargs
-                )
+                def checkpointed_forward(*inputs, **kwargs):
+                    return torch.utils.checkpoint.checkpoint(
+                        block._original_forward, *inputs, use_reentrant=True, **kwargs
+                    )
+                block.forward = checkpointed_forward
     
     # patch underlying net
     monkey_patch_block(lpips_model.net.slice1)
@@ -588,24 +590,22 @@ def compute_loss(
         predicted_pixels = pipeline.vae.decode(model_noised_latents, return_dict=False)[0]
 
         with torch.no_grad():
-            weighted_mask = mask_image * mask_loss_weight + (1 - mask_image)
             noisy_image = pipeline.vae.decode(noisy_latents, return_dict=False)[0]
 
             # get the batch indices of sigmas where the sigma is below the pixel loss noise threshold.
             # note that sigmas is a (B, 1, 1, 1) tensor,
             # as a single-dim tensor, this will be a (B,) tensor.
-            active_batch_indices = (sigmas <= config.pixel_loss_noise_threshold).nonzero(as_tuple=False).reshape(-1)
-            # remove the batch indices from the predicted pixels, noisy image, and weighted mask.
-            weighted_mask = weighted_mask[active_batch_indices]         
+            active_batch_indices = (sigmas <= config.pixel_loss_noise_threshold).nonzero(as_tuple=False).reshape(-1)    
             noisy_image = noisy_image[active_batch_indices]
+            mask_weights = mask_loss_weight[active_batch_indices]
 
         predicted_pixels = predicted_pixels[active_batch_indices]
 
         if active_batch_indices.numel() > 0:
-            # note: shape here is (B, 1, H, W) only because Spatial LPIPS is used.
+            # note: shape here is (B,)
             pixel_loss = pipeline.lpips_loss(predicted_pixels, noisy_image)
-            # apply the weighted mask to the pixel loss
-            pixel_loss = pixel_loss * weighted_mask
+            pixel_loss = pixel_loss * mask_weights.squeeze()
+            
             pixel_loss = pixel_loss.mean()
         else:
             # If no active batch indices, return 0 loss
@@ -697,7 +697,7 @@ def main():
     pipeline.training_scheduler = copy.deepcopy(pipeline.scheduler)
 
     # Spatial means that the LPIPS loss will be computed per-pixel
-    pipeline.lpips_loss = lpips.LPIPS(net='vgg', spatial=True).to(accelerator.device)
+    pipeline.lpips_loss = lpips.LPIPS(net='vgg', spatial=False).to(accelerator.device)
 
     # Select trainable parameters using regexes from args.trainable_params
     trainable_params = get_trainable_params(transformer, args.trainable_params)
