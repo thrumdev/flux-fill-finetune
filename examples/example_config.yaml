@@ -1,0 +1,19 @@
+# Example config file for main.py
+# You can use this file with: python main.py --config examples/example_config.yaml
+
+epochs: 10
+batch_size: 2
+lr: 0.0001
+wandb_name: my_run
+wandb_project: my_project
+validation_epochs: 1
+save_epochs: 1
+seed: 42
+gradient_checkpointing: true
+gradient_accumulation_steps: 2
+offload-heavy-encoders: false
+lr_scheduler: constant
+lr_warmup_steps: 500
+lr_num_cycles: 1
+trainable_params:
+  - ".*"
