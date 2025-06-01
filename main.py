@@ -155,7 +155,7 @@ class DummyTransformer(torch.nn.Module):
         return self._dtype
     
 MAX_VALIDATION_IMAGES = 4
-def validate(transformer, val_dataloader, accelerator, pipeline, epoch=-1, offload_heavy=False):
+def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-1):
     if not accelerator.is_main_process:
         return
     
@@ -180,7 +180,7 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=-1, offlo
         with torch.autocast(device_type=accelerator.device.type, dtype=weight_dtype):
             for image, mask, prompt in val_dataloader:
                 # Use the same training_step for validation, but do not backprop
-                loss = training_step(transformer, pipeline, image, mask, prompt, weight_dtype, accelerator.device, offload_heavy)
+                loss = training_step(transformer, pipeline, image, mask, prompt, weight_dtype, accelerator.device, config)
                 if loss is not None:
                     val_losses.append(loss.item())
 
@@ -211,7 +211,7 @@ def validate(transformer, val_dataloader, accelerator, pipeline, epoch=-1, offlo
     # Set the transformer back to the dummy transformer
     pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
 
-    if offload_heavy:
+    if config.offload_heavy_encoders:
         offload_pipeline_heavy(pipeline)
 
     wandb.log(log_dict)
@@ -350,7 +350,7 @@ def load_pipeline_heavy(pipeline, device):
         pipeline.text_encoder_2.to(device)
 
 # Runs a training step. returns the loss.
-def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_dtype, device, offload_heavy_encoders):
+def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_dtype, device, config):
     """
     Args:
         transformer: The transformer module from the pipeline (pipeline.transformer)
@@ -379,7 +379,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
         # 1. Choose random timesteps for the entire batch.
         timesteps = select_timesteps(batch_size, pipeline).to(device=device)
 
-        if offload_heavy_encoders:
+        if config.offload_heavy_encoders:
             load_pipeline_heavy(pipeline, device)
 
         # 2. Encode prompts, then offload heavy pipeline modules to CPU to save memory
@@ -400,7 +400,7 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
 
         # Offload heavy pipeline modules to CPU to save memory
         # This is important to avoid OOM errors during training.
-        if offload_heavy_encoders:
+        if config.offload_heavy_encoders:
             offload_pipeline_heavy(pipeline)
 
         prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
@@ -596,7 +596,7 @@ def main():
 
     print(f"Optimizer dtype: {next(iter(optimizer.param_groups[0]['params'])).dtype}")
 
-    validate(transformer, val_dataloader, accelerator, pipeline, offload_heavy=args.offload_heavy_encoders)
+    validate(transformer, val_dataloader, accelerator, pipeline, config=args)
 
     transformer.train()
     for epoch in range(args.epochs):
@@ -610,7 +610,7 @@ def main():
             with accelerator.accumulate(transformer):
                 with accelerator.autocast():
                     loss = training_step(
-                        transformer, pipeline, images, masks, prompts, weight_dtype, accelerator.device, args.offload_heavy_encoders
+                        transformer, pipeline, images, masks, prompts, weight_dtype, accelerator.device, args
                     )
                 if loss is None:
                     raise RuntimeError("training_step returned None. Check implementation.")
@@ -631,7 +631,7 @@ def main():
         # Validation logic
         is_last_epoch = (epoch + 1) == args.epochs
         if (epoch + 1) % args.validation_epochs == 0 and not is_last_epoch:
-            validate(transformer, val_dataloader, accelerator, pipeline, epoch=epoch, offload_heavy=args.offload_heavy_encoders)
+            validate(transformer, val_dataloader, accelerator, pipeline, epoch=epoch, config=args)
 
         # Checkpoint saving logic (avoid duplicate save at end, and allow save_epochs==0 to mean 'never except end')
 
@@ -639,7 +639,7 @@ def main():
             save_checkpoint(transformer, optimizer, epoch + 1)
 
     # Final validation at the end
-    validate(transformer, val_dataloader, accelerator, pipeline, epoch=args.epochs-1, offload_heavy=args.offload_heavy_encoders)
+    validate(transformer, val_dataloader, accelerator, pipeline, epoch=args.epochs-1, config=args)
 
     # Always save a final checkpoint at the end
     if accelerator.is_main_process:
