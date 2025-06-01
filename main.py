@@ -38,6 +38,10 @@ def get_parser():
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help='Number of gradient accumulation steps')
     parser.add_argument('--offload-heavy-encoders', action='store_true', default=False, help='Offload heavy encoder modules to CPU to save GPU memory when not in use')
 
+    parser.add_argument('--mask_loss_weight', type=float, default=5.0, help='Weight multiplier for the masked area in the loss (default: 5.0)')
+    parser.add_argument('--mse_loss_weight', type=float, default=0.8, help='Weighting of the MSE loss in the total loss (default: 0.8)')
+    parser.add_argument('--pixel_loss_weight', type=float, default=0.2, help='Weighting of the LPIPS (pixel) loss in the total loss (default: 0.2)')
+
     parser.add_argument(
         "--lr_scheduler",
         type=str,
@@ -474,13 +478,17 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
     )
 
     # 7. Compute loss
-    # For simplicity, we use MSE loss here, but you can use any other loss function as needed.
-    loss = torch.mean(
+    loss = compute_loss(config, pipeline, noise_pred, target, init_image, mask_image)
+    return loss
+
+def compute_loss(config, pipeline, noise_pred, target, init_image, mask_image):
+    mse_loss = torch.mean(
         ((noise_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
         1,
     )
-    loss = loss.mean()
-    return loss
+    mse_loss = mse_loss.mean()
+
+    return mse_loss
 
 def collate_fn(batch):
     images, masks, prompts = zip(*batch)
