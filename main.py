@@ -177,6 +177,8 @@ def get_trainable_params(model, patterns):
     """
     if isinstance(patterns, str):
         patterns = [patterns]
+
+    print("Selecting trainable parameters:")
     param_name_to_param = dict(model.named_parameters())
     trainable_param_names = set()
     for pattern in patterns:
@@ -184,6 +186,7 @@ def get_trainable_params(model, patterns):
         for name in param_name_to_param:
             if regex.fullmatch(name) or regex.search(name):
                 trainable_param_names.add(name)
+                print(f"\ttraining {name}")
     trainable_params = [param for name, param in param_name_to_param.items() if name in trainable_param_names]
     if not trainable_params:
         raise ValueError(f"No trainable parameters matched the provided regex(es): {patterns}")
