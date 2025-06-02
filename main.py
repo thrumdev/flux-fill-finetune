@@ -71,6 +71,13 @@ def get_parser():
         help='Regex or list of regexes to select trainable parameters by name. Default: all parameters.'
     )
 
+
+    parser.add_argument(
+        '--restore_from_checkpoint',
+        type=str,
+        default=None,
+        help='Path to a .pt checkpoint file to restore training from'
+    )
     return parser
 
 def parse_args_with_config():
@@ -689,6 +696,12 @@ def main():
     pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
     pipeline.to(accelerator.device)
 
+    start_epoch = 0
+    if args.restore_from_checkpoint is not None:
+        print(f"Restoring from checkpoint: {args.restore_from_checkpoint}")
+        start_epoch = load_checkpoint(transformer, pipeline.optimizer, args.restore_from_checkpoint)
+        print(f"Resuming training from epoch {start_epoch}")
+
     # explicitly disable gradient tracking for all non-transformer components
     pipeline.vae.requires_grad_(False)
     pipeline.text_encoder.requires_grad_(False)
@@ -745,7 +758,8 @@ def main():
     validate(transformer, val_dataloader, accelerator, pipeline, config=args)
 
     transformer.train()
-    for epoch in range(args.epochs):
+    end_epoch = start_epoch + args.epochs
+    for epoch in range(start_epoch, end_epoch):
         if accelerator.is_main_process:
             epoch_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Epoch {epoch+1}/{args.epochs}")
         else:
@@ -790,10 +804,10 @@ def main():
         avg_mse_loss = sum([v["mse_loss"] for v in losses]) / len(losses) if losses else float('nan')
         avg_pixel_loss = sum([v["pixel_loss"] for v in losses]) / len(losses) if losses else float('nan')
 
-        print(f"Epoch {epoch + 1}/{args.epochs} - Avg Loss: {avg_loss:.4f}, MSE Loss: {avg_mse_loss:.4f}, Pixel Loss: {avg_pixel_loss:.4f}")
+        print(f"Epoch {epoch + 1}/{end_epoch} - Avg Loss: {avg_loss:.4f}, MSE Loss: {avg_mse_loss:.4f}, Pixel Loss: {avg_pixel_loss:.4f}")
 
         # Validation logic
-        is_last_epoch = (epoch + 1) == args.epochs
+        is_last_epoch = (epoch + 1) == end_epoch
         if (epoch + 1) % args.validation_epochs == 0 and not is_last_epoch:
             validate(transformer, val_dataloader, accelerator, pipeline, epoch=epoch, config=args)
 
@@ -803,11 +817,11 @@ def main():
             save_checkpoint(transformer, optimizer, epoch + 1)
 
     # Final validation at the end
-    validate(transformer, val_dataloader, accelerator, pipeline, epoch=args.epochs-1, config=args)
+    validate(transformer, val_dataloader, accelerator, pipeline, epoch=end_epoch-1, config=args)
 
     # Always save a final checkpoint at the end
     if accelerator.is_main_process:
-        save_checkpoint(transformer, optimizer, args.epochs)
+        save_checkpoint(transformer, optimizer, end_epoch-1)
     wandb.finish()
 
 if __name__ == "__main__":
