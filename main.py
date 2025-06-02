@@ -696,12 +696,6 @@ def main():
     pipeline.transformer = DummyTransformer(dtype=getattr(transformer, "dtype", torch.float32))
     pipeline.to(accelerator.device)
 
-    start_epoch = 0
-    if args.restore_from_checkpoint is not None:
-        print(f"Restoring from checkpoint: {args.restore_from_checkpoint}")
-        start_epoch = load_checkpoint(transformer, pipeline.optimizer, args.restore_from_checkpoint)
-        print(f"Resuming training from epoch {start_epoch}")
-
     # explicitly disable gradient tracking for all non-transformer components
     pipeline.vae.requires_grad_(False)
     pipeline.text_encoder.requires_grad_(False)
@@ -737,6 +731,12 @@ def main():
         lr=args.lr,
         fused=True,
     )
+
+    start_epoch = 0
+    if args.restore_from_checkpoint is not None:
+        print(f"Restoring from checkpoint: {args.restore_from_checkpoint}")
+        start_epoch = load_checkpoint(transformer, optimizer, args.restore_from_checkpoint)
+        print(f"Resuming training from epoch {start_epoch}")
 
     num_warmup_steps_for_scheduler = args.lr_warmup_steps * accelerator.num_processes
     len_train_dataloader_after_sharding = math.ceil(len(dataloader) / accelerator.num_processes)
