@@ -316,7 +316,10 @@ def load_checkpoint(transformer, optimizer, checkpoint_path, restore_optimizer):
     transformer.load_state_dict(checkpoint["transformer"])
     if restore_optimizer:
         optimizer.load_state_dict(checkpoint["optimizer"])
-    start_epoch = checkpoint["epoch"]
+        start_epoch = checkpoint["epoch"]
+    else:
+        start_epoch = 0
+        
     return start_epoch
 
 def select_timesteps(batch_size, pipeline):
