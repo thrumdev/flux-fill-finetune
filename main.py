@@ -78,6 +78,12 @@ def get_parser():
         default=None,
         help='Path to a .pt checkpoint file to restore training from'
     )
+    parser.add_argument(
+        '--restore_optimizer',
+        action='store_true',
+        default=False,
+        help='Whether to restore the optimizer state from the checkpoint (default: False). If True, the optimizer state will be restored from the checkpoint.'
+    )
     return parser
 
 def parse_args_with_config():
@@ -305,10 +311,11 @@ def save_checkpoint(transformer, optimizer, epoch, checkpoint_dir="checkpoints")
     return checkpoint_path
 
 # Load a full checkpoint for resuming training
-def load_checkpoint(transformer, optimizer, checkpoint_path):
+def load_checkpoint(transformer, optimizer, checkpoint_path, restore_optimizer):
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     transformer.load_state_dict(checkpoint["transformer"])
-    optimizer.load_state_dict(checkpoint["optimizer"])
+    if restore_optimizer:
+        optimizer.load_state_dict(checkpoint["optimizer"])
     start_epoch = checkpoint["epoch"]
     return start_epoch
 
@@ -738,7 +745,7 @@ def main():
     start_epoch = 0
     if args.restore_from_checkpoint is not None:
         print(f"Restoring from checkpoint: {args.restore_from_checkpoint}")
-        start_epoch = load_checkpoint(transformer, optimizer, args.restore_from_checkpoint)
+        start_epoch = load_checkpoint(transformer, optimizer, args.restore_from_checkpoint, args.restore_optimizer)
         print(f"Resuming training from epoch {start_epoch}")
 
     num_warmup_steps_for_scheduler = args.lr_warmup_steps * accelerator.num_processes
