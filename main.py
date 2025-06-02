@@ -761,7 +761,7 @@ def main():
     end_epoch = start_epoch + args.epochs
     for epoch in range(start_epoch, end_epoch):
         if accelerator.is_main_process:
-            epoch_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Epoch {epoch+1}/{args.epochs}")
+            epoch_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Epoch {epoch+1}/{end_epoch}")
         else:
             epoch_bar = enumerate(dataloader)
 
