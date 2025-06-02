@@ -750,6 +750,9 @@ def main():
             epoch_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Epoch {epoch+1}/{args.epochs}")
         else:
             epoch_bar = enumerate(dataloader)
+
+        total_steps = len(dataloader)
+        losses = []
         for step, batch in epoch_bar:
             images, masks, prompts = batch
             # Use the modular training_step function for per-batch training logic
@@ -769,8 +772,9 @@ def main():
                     lr_scheduler.step()
                     optimizer.zero_grad()
 
-            # Log loss and learning rate to wandb (log only on main process and after accumulation step)
-            if accelerator.is_main_process and accelerator.sync_gradients:
+            # Log loss and learning rate to wandb
+            if accelerator.is_main_process:
+                losses.append(loss)
                 lr = lr_scheduler.get_last_lr()[0]
                 if wandb.run is not None:
                     wandb.log({
@@ -781,6 +785,12 @@ def main():
                         "train/step": step,
                         "epoch": epoch, 
                     })
+
+        avg_loss = sum([v["loss"] for v in losses]) / len(losses) if losses else float('nan')
+        avg_mse_loss = sum([v["mse_loss"] for v in losses]) / len(losses) if losses else float('nan')
+        avg_pixel_loss = sum([v["pixel_loss"] for v in losses]) / len(losses) if losses else float('nan')
+
+        print(f"Epoch {epoch + 1}/{args.epochs} - Avg Loss: {avg_loss:.4f}, MSE Loss: {avg_mse_loss:.4f}, Pixel Loss: {avg_pixel_loss:.4f}")
 
         # Validation logic
         is_last_epoch = (epoch + 1) == args.epochs
