@@ -683,6 +683,12 @@ def main():
     # drop_last=True will drop the last batch if it's smaller than batch_size. This is useful if your model or pipeline requires fixed batch sizes.
     # drop_last=False (default) will include the last batch even if it's smaller. This is usually fine for most training, but can cause issues if your model expects fixed batch sizes.
     # You can set drop_last=True below if needed.
+    accelerator = Accelerator(
+        gradient_accumulation_steps=args.gradient_accumulation_steps
+    )
+
+    weight_dtype = get_weight_dtype(accelerator)
+    print(f"Using weight dtype: {weight_dtype}")
 
     # Initialize Weights & Biases with additional config
     if args.wandb_name is not None and args.wandb_project is not None:
@@ -696,6 +702,7 @@ def main():
                 "validation_epochs": args.validation_epochs,
                 "save_epochs": args.save_epochs,
                 "seed": seed,
+                "dtype": weight_dtype,
                 "gradient_accumulation_steps": args.gradient_accumulation_steps,
                 "mask_loss_weight": args.mask_loss_weight,
                 "mse_loss_weight": args.mse_loss_weight,
@@ -707,14 +714,6 @@ def main():
                 "drop_last": False,  # default, see above
             }
         )
-
-
-    accelerator = Accelerator(
-        gradient_accumulation_steps=args.gradient_accumulation_steps
-    )
-
-    weight_dtype = get_weight_dtype(accelerator)
-    print(f"Using weight dtype: {weight_dtype}")
 
     pipeline = load_flux_fill(weight_dtype)
 
