@@ -696,6 +696,14 @@ def main():
                 "validation_epochs": args.validation_epochs,
                 "save_epochs": args.save_epochs,
                 "seed": seed,
+                "gradient_accumulation_steps": args.gradient_accumulation_steps,
+                "mask_loss_weight": args.mask_loss_weight,
+                "mse_loss_weight": args.mse_loss_weight,
+                "pixel_loss_weight": args.pixel_loss_weight,
+                "pixel_loss_noise_threshold": args.pixel_loss_noise_threshold,
+                "lr_scheduler": args.lr_scheduler,
+                "trainable_params": args.trainable_params,
+                "use_mask_ratio_weight": args.use_mask_ratio_weight,
                 "drop_last": False,  # default, see above
             }
         )
