@@ -34,6 +34,7 @@ def get_parser():
     parser.add_argument('--wandb_project', type=str, help='wandb project name (umbrella for runs)')
     parser.add_argument('--validation_epochs', type=int, default=1, help='How often (in epochs) to run validation')
     parser.add_argument('--save_epochs', type=int, default=1, help='How many epochs between checkpoints (default: 1). 0 indicates no intermediate saves')
+    parser.add_argument('--max_checkpoints', type=int, default=0, help='Maximum number of checkpoints to keep (default: 0, unlimited). Older checkpoints will be deleted if exceeded.')
     parser.add_argument('--seed', type=int, default=None, help='Random seed (optional, if not set a random one will be generated)')
     parser.add_argument('--gradient_checkpointing', action='store_true', help='Enable gradient checkpointing for transformer')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help='Number of gradient accumulation steps')
@@ -305,9 +306,35 @@ def calculate_shift(
     mu = image_seq_len * m + b
     return mu
 
+def manage_max_checkpoints(checkpoint_dir, max_checkpoints):
+    """
+    Deletes oldest checkpoints if there are more than max_checkpoints-1 in the directory.
+    This is intended to be called BEFORE saving a new checkpoint, so that after saving, the count is at most max_checkpoints.
+    """
+    if max_checkpoints == 0:
+        return
+    # List all checkpoint files matching the pattern
+    files = [f for f in os.listdir(checkpoint_dir) if f.startswith("checkpoint_epoch_") and f.endswith(".pt")]
+    # Extract epoch numbers and sort by epoch
+    def extract_epoch(filename):
+        import re
+        m = re.search(r"checkpoint_epoch_(\d+)\.pt", filename)
+        return int(m.group(1)) if m else -1
+    files = sorted(files, key=extract_epoch)
+    # If more than max_checkpoints-1, delete the oldest (so after saving, count is at most max_checkpoints)
+    while len(files) > max_checkpoints - 1:
+        to_delete = files.pop(0)
+        try:
+            print(f"Checkpoint limit reached, deleting old checkpoint: {to_delete}")
+            os.remove(os.path.join(checkpoint_dir, to_delete))
+        except Exception as e:
+            print(f"Warning: failed to delete old checkpoint {to_delete}: {e}")
+
 # Save a full checkpoint for resuming training (model, optimizer, epoch)
-def save_checkpoint(transformer, optimizer, epoch, checkpoint_dir="checkpoints"):
+def save_checkpoint(transformer, optimizer, epoch, checkpoint_dir="checkpoints", max_checkpoints=0):
     os.makedirs(checkpoint_dir, exist_ok=True)
+    # Delete old checkpoints BEFORE saving the new one, to limit peak disk usage
+    manage_max_checkpoints(checkpoint_dir, max_checkpoints)
     checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
     torch.save({
         "transformer": transformer.state_dict(),
@@ -315,6 +342,7 @@ def save_checkpoint(transformer, optimizer, epoch, checkpoint_dir="checkpoints")
         "epoch": epoch,
     }, checkpoint_path)
     return checkpoint_path
+
 
 # Load a full checkpoint for resuming training
 def load_checkpoint(transformer, optimizer, checkpoint_path, restore_optimizer):
@@ -844,14 +872,14 @@ def main():
         # Checkpoint saving logic (avoid duplicate save at end, and allow save_epochs==0 to mean 'never except end')
 
         if args.save_epochs > 0 and (epoch + 1) % args.save_epochs == 0 and not is_last_epoch and accelerator.is_main_process:
-            save_checkpoint(transformer, optimizer, epoch + 1)
+            save_checkpoint(transformer, optimizer, epoch + 1, checkpoint_dir="checkpoints", max_checkpoints=args.max_checkpoints)
 
     # Final validation at the end
     validate(transformer, val_dataloader, accelerator, pipeline, epoch=end_epoch-1, config=args)
 
     # Always save a final checkpoint at the end
     if accelerator.is_main_process:
-        save_checkpoint(transformer, optimizer, end_epoch-1)
+        save_checkpoint(transformer, optimizer, end_epoch-1, checkpoint_dir="checkpoints", max_checkpoints=args.max_checkpoints)
     wandb.finish()
 
 if __name__ == "__main__":
