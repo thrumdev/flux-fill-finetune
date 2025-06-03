@@ -37,7 +37,7 @@ def get_parser():
     parser.add_argument('--seed', type=int, default=None, help='Random seed (optional, if not set a random one will be generated)')
     parser.add_argument('--gradient_checkpointing', action='store_true', help='Enable gradient checkpointing for transformer')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help='Number of gradient accumulation steps')
-    parser.add_argument('--offload-heavy-encoders', action='store_true', default=False, help='Offload heavy encoder modules to CPU to save GPU memory when not in use')
+    parser.add_argument('--offload_heavy_encoders', action='store_true', default=False, help='Offload heavy encoder modules to CPU to save GPU memory when not in use')
 
     parser.add_argument('--mask_loss_weight', type=float, default=5.0, help='Weight multiplier for the masked area in the loss (default: 5.0)')
     parser.add_argument('--mse_loss_weight', type=float, default=0.8, help='Weighting of the MSE loss in the total loss (default: 0.8)')
@@ -71,7 +71,6 @@ def get_parser():
         help='Regex or list of regexes to select trainable parameters by name. Default: all parameters.'
     )
 
-
     parser.add_argument(
         '--restore_from_checkpoint',
         type=str,
@@ -83,6 +82,13 @@ def get_parser():
         action='store_true',
         default=False,
         help='Whether to restore the optimizer state from the checkpoint (default: False). If True, the optimizer state will be restored from the checkpoint.'
+    )
+    
+    parser.add_argument(
+        '--use_mask_ratio_weight',
+        action='store_true',
+        default=False,
+        help='If set, use mask-to-image size ratio as a weighting factor in loss calculation.'
     )
     return parser
 
@@ -319,7 +325,6 @@ def load_checkpoint(transformer, optimizer, checkpoint_path, restore_optimizer):
         start_epoch = checkpoint["epoch"]
     else:
         start_epoch = 0
-        
     return start_epoch
 
 def select_timesteps(batch_size, pipeline):
@@ -581,7 +586,12 @@ def compute_loss(
         mask_latent_sized = vae_scale_mask(mask_image, pipeline).expand_as(noise_pred)
 
         # Compute mask loss weight based on the ratio of masked pixels
-        mask_loss_weight = get_mask_loss_weight_by_ratio(mask_image) * config.mask_loss_weight
+        if config.use_mask_ratio_weight:
+            mask_loss_weight = get_mask_loss_weight_by_ratio(mask_image) * config.mask_loss_weight
+        else:
+            # make (B,) shaped tensor where each item has value `config.mask_loss_weight`
+            mask_loss_weight = torch.full((mask_latent_sized.shape[0],), config.mask_loss_weight, device=noisy_latents.device, dtype=noisy_latents.dtype)
+            
         # Reshape to (B, 1, 1, 1) for broadcasting across the batch dimension
         mask_loss_weight = mask_loss_weight.reshape(-1, 1, 1, 1) 
 

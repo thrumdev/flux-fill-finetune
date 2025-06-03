@@ -11,7 +11,7 @@ save_epochs: 1
 seed: 42
 gradient_checkpointing: true
 gradient_accumulation_steps: 2
-offload-heavy-encoders: false
+offload_heavy_encoders: false
 lr_scheduler: constant
 lr_warmup_steps: 500
 lr_num_cycles: 1
@@ -21,3 +21,4 @@ mask_loss_weight: 5.0
 mse_loss_weight: 0.8
 pixel_loss_weight: 0.2
 pixel_loss_noise_threshold: 0.5
+use_mask_ratio_weight: true
