@@ -217,7 +217,7 @@ def get_trainable_params(model, patterns):
 
 def set_trainable_params(model, trainable_params):
     """
-    Set the requires_grad attribute of parameters matching any of the provided regex patterns to True.
+    Set the requires_grad attribute of all given parameters to True.
     """
     for param in model.parameters():
         param.requires_grad = False  # Disable all by default
