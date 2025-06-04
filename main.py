@@ -22,7 +22,7 @@ import lpips
 from PIL import Image
 
 import diffusers
-from diffusers import FluxFillPipeline
+from diffusers import FluxFillPipeline, FluxPriorReduxPipeline
 
 def get_parser():
     parser = argparse.ArgumentParser(description="Accelerate Training Loop with wandb")
@@ -90,6 +90,12 @@ def get_parser():
         action='store_true',
         default=False,
         help='If set, use mask-to-image size ratio as a weighting factor in loss calculation.'
+    )
+    parser.add_argument(
+        '--flux_redux_rate',
+        type=float,
+        default=0.0,
+        help='The rate (fraction of training steps) to use Flux-Redux to condition. Default: 0.0.'
     )
     return parser
 
@@ -216,7 +222,7 @@ class DummyTransformer(torch.nn.Module):
         return self._dtype
     
 MAX_VALIDATION_IMAGES = 4
-def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-1):
+def validate(transformer, val_dataloader, accelerator, pipeline, redux_pipeline, config, epoch=-1):
     if not accelerator.is_main_process:
         return
     
@@ -241,7 +247,7 @@ def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-
         with torch.autocast(device_type=accelerator.device.type, dtype=weight_dtype):
             for image, mask, prompt in val_dataloader:
                 # Use the same training_step for validation, but do not backprop
-                loss = training_step(transformer, pipeline, image, mask, prompt, weight_dtype, accelerator.device, config)
+                loss = training_step(transformer, pipeline, redux_pipeline, image, mask, prompt, weight_dtype, accelerator.device, config)
                 if loss is not None:
                     val_losses.append(loss)
 
@@ -249,16 +255,34 @@ def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-
                     continue
 
                 height, width = image.shape[2], image.shape[3]
-                outputs = pipeline(
-                    prompt=prompt,
-                    image=image.to(device=accelerator.device, dtype=weight_dtype),
-                    mask_image=mask.to(device=accelerator.device, dtype=weight_dtype),
-                    height=height,
-                    width=width,
-                    num_inference_steps=20,
-                    guidance_scale=7.5,
-                    output_type="pil",
-                ).images
+                if redux_pipeline is not None:
+                    (prompt_embeds, pooled_prompt_embeds) = redux_pipeline(
+                        image.to(device=accelerator.device, dtype=weight_dtype),
+                        return_dict=False,
+                    )
+
+                    outputs = pipeline(
+                        prompt_embeds=prompt_embeds,
+                        pooled_prompt_embeds=pooled_prompt_embeds,
+                        image=image.to(device=accelerator.device, dtype=weight_dtype),
+                        mask_image=mask.to(device=accelerator.device, dtype=weight_dtype),
+                        height=height,
+                        width=width,
+                        num_inference_steps=20,
+                        guidance_scale=7.5,
+                        output_type="pil",
+                    ).images
+                else:
+                    outputs = pipeline(
+                        prompt=prompt,
+                        image=image.to(device=accelerator.device, dtype=weight_dtype),
+                        mask_image=mask.to(device=accelerator.device, dtype=weight_dtype),
+                        height=height,
+                        width=width,
+                        num_inference_steps=20,
+                        guidance_scale=7.5,
+                        output_type="pil",
+                    ).images
 
                 for generated_image, single_prompt in zip(outputs, prompt):
                     generated_image = generated_image.convert("RGB")
@@ -289,9 +313,22 @@ def validate(transformer, val_dataloader, accelerator, pipeline, config, epoch=-
     accelerator.print(f"\tavg. loss total= {avg_val_loss:.4f} mse= {avg_mse_loss:.4f} pixel= {avg_pixel_loss:.4f}")
     transformer.train()
 
-def load_flux_fill(dtype):
+def load_flux_fill(dtype, ignore_text_encoders=False):
     repo_id = "black-forest-labs/FLUX.1-Fill-dev"
-    return FluxFillPipeline.from_pretrained(repo_id, torch_dtype=dtype)
+    if ignore_text_encoders:
+        # If we want to ignore text encoders, we can set them to None
+        return FluxFillPipeline.from_pretrained(
+            repo_id, 
+            text_encoder=None,
+            text_encoder_2=None,
+            torch_dtype=dtype,
+        )
+    else:
+        return FluxFillPipeline.from_pretrained(repo_id, torch_dtype=dtype)
+
+def load_flux_redux(dtype):
+    repo_id = "black-forest-labs/FLUX.1-Redux-dev"
+    return FluxPriorReduxPipeline.from_pretrained(repo_id, torch_dtype=dtype)
 
 # Copied from diffusers.pipelines.flux.pipeline_flux.calculate_shift
 def calculate_shift(
@@ -433,7 +470,7 @@ def load_pipeline_heavy(pipeline, device):
         pipeline.text_encoder_2.to(device)
 
 # Runs a training step. returns the loss.
-def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_dtype, device, config):
+def training_step(transformer, pipeline, redux_pipeline, init_image, mask_image, prompt, weight_dtype, device, config):
     """
     Args:
         transformer: The transformer module from the pipeline (pipeline.transformer)
@@ -464,27 +501,38 @@ def training_step(transformer, pipeline, init_image, mask_image, prompt, weight_
 
         if config.offload_heavy_encoders:
             load_pipeline_heavy(pipeline, device)
+            load_pipeline_heavy(redux_pipeline, device)
 
         # 2. Encode prompts, then offload heavy pipeline modules to CPU to save memory
-        (
-            prompt_embeds,
-            pooled_prompt_embeds,
-            text_ids,
-        ) = pipeline.encode_prompt(
-            prompt=prompt,
-            prompt_2=prompt,
-            prompt_embeds=None,
-            pooled_prompt_embeds=None,
-            device=device,
-            num_images_per_prompt=1,
-            max_sequence_length=512,
-            lora_scale=None,
-        )
+
+        use_flux_redux = random.random() < config.flux_redux_rate
+        if use_flux_redux:
+            (prompt_embeds, pooled_prompt_embeds) = redux_pipeline(
+                image=init_image,
+                return_dict=False,
+            )
+            text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device, dtype=weight_dtype)
+        else:
+            (
+                prompt_embeds,
+                pooled_prompt_embeds,
+                text_ids,
+            ) = pipeline.encode_prompt(
+                prompt=prompt,
+                prompt_2=prompt,
+                prompt_embeds=None,
+                pooled_prompt_embeds=None,
+                device=device,
+                num_images_per_prompt=1,
+                max_sequence_length=512,
+                lora_scale=None,
+            )
 
         # Offload heavy pipeline modules to CPU to save memory
         # This is important to avoid OOM errors during training.
         if config.offload_heavy_encoders:
             offload_pipeline_heavy(pipeline)
+            offload_pipeline_heavy(redux_pipeline)
 
         prompt_embeds = prompt_embeds.to(dtype=weight_dtype)
         pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=weight_dtype)
@@ -743,7 +791,9 @@ def main():
             }
         )
 
-    pipeline = load_flux_fill(weight_dtype)
+    pipeline = load_flux_fill(weight_dtype, args.flux_redux_rate > 0 and args.flux_redux_rate < 1.0)
+    if args.flux_redux_rate > 0:
+        redux_pipeline = load_flux_redux(weight_dtype).to(accelerator.device)
 
     # Only train the transformer component
     transformer = pipeline.transformer
@@ -814,7 +864,7 @@ def main():
 
     print(f"Optimizer dtype: {next(iter(optimizer.param_groups[0]['params'])).dtype}")
 
-    validate(transformer, val_dataloader, accelerator, pipeline, config=args)
+    validate(transformer, val_dataloader, accelerator, pipeline, redux_pipeline, config=args)
 
     transformer.train()
     end_epoch = start_epoch + args.epochs
@@ -832,7 +882,15 @@ def main():
             with accelerator.accumulate(transformer):
                 with accelerator.autocast():
                     loss = training_step(
-                        transformer, pipeline, images, masks, prompts, weight_dtype, accelerator.device, args
+                        transformer, 
+                        pipeline, 
+                        redux_pipeline, 
+                        images, 
+                        masks, 
+                        prompts, 
+                        weight_dtype, 
+                        accelerator.device, 
+                        args
                     )
                 if loss is None:
                     raise RuntimeError("training_step returned None. Check implementation.")
@@ -868,7 +926,7 @@ def main():
         # Validation logic
         is_last_epoch = (epoch + 1) == end_epoch
         if (epoch + 1) % args.validation_epochs == 0 and not is_last_epoch:
-            validate(transformer, val_dataloader, accelerator, pipeline, epoch=epoch, config=args)
+            validate(transformer, val_dataloader, accelerator, pipeline, redux_pipeline, epoch=epoch, config=args)
 
         # Checkpoint saving logic (avoid duplicate save at end, and allow save_epochs==0 to mean 'never except end')
 
@@ -882,7 +940,7 @@ def main():
             )
 
     # Final validation at the end
-    validate(transformer, val_dataloader, accelerator, pipeline, epoch=end_epoch-1, config=args)
+    validate(transformer, val_dataloader, accelerator, pipeline, redux_pipeline, epoch=end_epoch-1, config=args)
 
     # Always save a final checkpoint at the end
     if accelerator.is_main_process:
