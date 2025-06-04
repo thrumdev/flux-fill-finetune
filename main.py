@@ -97,6 +97,12 @@ def get_parser():
         default=0.0,
         help='The rate (fraction of training steps) to use Flux-Redux to condition. Default: 0.0.'
     )
+    parser.add_argument(
+        '--flux_redux_scale',
+        type=float,
+        default=1.0,
+        help='Scale factor (between 0 and 1, default 1) for Flux-Redux conditioning.'
+    )
     return parser
 
 def parse_args_with_config():
@@ -258,6 +264,8 @@ def validate(transformer, val_dataloader, accelerator, pipeline, redux_pipeline,
                 if redux_pipeline is not None:
                     (prompt_embeds, pooled_prompt_embeds) = redux_pipeline(
                         image.to(device=accelerator.device, dtype=weight_dtype),
+                        prompt_embeds_scale=config.flux_redux_scale,
+                        pooled_prompt_embeds_scale=config.flux_redux_scale,
                         return_dict=False,
                     )
 
@@ -509,6 +517,8 @@ def training_step(transformer, pipeline, redux_pipeline, init_image, mask_image,
         if use_flux_redux:
             (prompt_embeds, pooled_prompt_embeds) = redux_pipeline(
                 image=init_image,
+                prompt_embeds_scale=config.flux_redux_scale,
+                pooled_prompt_embeds_scale=config.flux_redux_scale,
                 return_dict=False,
             )
             text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device, dtype=weight_dtype)
