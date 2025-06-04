@@ -922,6 +922,7 @@ def main():
                 accelerator.backward(loss["loss"])
                 # Only step optimizer and zero grad when gradients are synced (i.e., after accumulation)
                 if accelerator.sync_gradients:
+                    torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
