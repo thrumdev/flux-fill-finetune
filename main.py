@@ -873,14 +873,26 @@ def main():
         # Checkpoint saving logic (avoid duplicate save at end, and allow save_epochs==0 to mean 'never except end')
 
         if args.save_epochs > 0 and (epoch + 1) % args.save_epochs == 0 and not is_last_epoch and accelerator.is_main_process:
-            save_checkpoint(transformer, optimizer, epoch + 1, checkpoint_dir="checkpoints", max_checkpoints=args.max_checkpoints)
+            save_checkpoint(
+                accelerator.unwrap_model(transformer), 
+                optimizer, 
+                epoch + 1, 
+                checkpoint_dir="checkpoints", 
+                max_checkpoints=args.max_checkpoints,
+            )
 
     # Final validation at the end
     validate(transformer, val_dataloader, accelerator, pipeline, epoch=end_epoch-1, config=args)
 
     # Always save a final checkpoint at the end
     if accelerator.is_main_process:
-        save_checkpoint(transformer, optimizer, end_epoch, checkpoint_dir="checkpoints", max_checkpoints=args.max_checkpoints)
+        save_checkpoint(
+            accelerator.unwrap_model(transformer), 
+            optimizer, 
+            end_epoch, 
+            checkpoint_dir="checkpoints", 
+            max_checkpoints=args.max_checkpoints,
+        )
     wandb.finish()
 
 if __name__ == "__main__":
