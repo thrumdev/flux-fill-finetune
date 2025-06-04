@@ -394,7 +394,7 @@ def save_checkpoint(transformer, optimizer, epoch, checkpoint_dir="checkpoints",
     manage_max_checkpoints(checkpoint_dir, max_checkpoints)
     checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
     torch.save({
-        "transformer": transformer.state_dict(),
+        "transformer": convert_diffusers_flux_to_bfl_format(transformer.state_dict()),
         "optimizer": optimizer.state_dict(),
         "epoch": epoch,
     }, checkpoint_path)
@@ -978,3 +978,197 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+def convert_diffusers_flux_to_bfl_format(
+    diffusers_state_dict, num_layers=19, num_single_layers=38, inner_dim=3072, mlp_ratio=4.0
+):
+    bfl_state_dict = {}
+
+    # time_in
+    bfl_state_dict["time_in.in_layer.weight"] = diffusers_state_dict.pop(
+        "time_text_embed.timestep_embedder.linear_1.weight"
+    )
+    bfl_state_dict["time_in.in_layer.bias"] = diffusers_state_dict.pop(
+        "time_text_embed.timestep_embedder.linear_1.bias"
+    )
+    bfl_state_dict["time_in.out_layer.weight"] = diffusers_state_dict.pop(
+        "time_text_embed.timestep_embedder.linear_2.weight"
+    )
+    bfl_state_dict["time_in.out_layer.bias"] = diffusers_state_dict.pop(
+        "time_text_embed.timestep_embedder.linear_2.bias"
+    )
+
+    # vector_in
+    bfl_state_dict["vector_in.in_layer.weight"] = diffusers_state_dict.pop(
+        "time_text_embed.text_embedder.linear_1.weight"
+    )
+    bfl_state_dict["vector_in.in_layer.bias"] = diffusers_state_dict.pop(
+        "time_text_embed.text_embedder.linear_1.bias"
+    )
+    bfl_state_dict["vector_in.out_layer.weight"] = diffusers_state_dict.pop(
+        "time_text_embed.text_embedder.linear_2.weight"
+    )
+    bfl_state_dict["vector_in.out_layer.bias"] = diffusers_state_dict.pop(
+        "time_text_embed.text_embedder.linear_2.bias"
+    )
+
+    # guidance
+    has_guidance = any("guidance" in k for k in diffusers_state_dict)
+    if has_guidance:
+        bfl_state_dict["guidance_in.in_layer.weight"] = diffusers_state_dict.pop(
+            "time_text_embed.guidance_embedder.linear_1.weight"
+        )
+        bfl_state_dict["guidance_in.in_layer.bias"] = diffusers_state_dict.pop(
+            "time_text_embed.guidance_embedder.linear_1.bias"
+        )
+        bfl_state_dict["guidance_in.out_layer.weight"] = diffusers_state_dict.pop(
+            "time_text_embed.guidance_embedder.linear_2.weight"
+        )
+        bfl_state_dict["guidance_in.out_layer.bias"] = diffusers_state_dict.pop(
+            "time_text_embed.guidance_embedder.linear_2.bias"
+        )
+
+    # txt_in
+    bfl_state_dict["txt_in.weight"] = diffusers_state_dict.pop("context_embedder.weight")
+    bfl_state_dict["txt_in.bias"] = diffusers_state_dict.pop("context_embedder.bias")
+
+    # img_in
+    bfl_state_dict["img_in.weight"] = diffusers_state_dict.pop("x_embedder.weight")
+    bfl_state_dict["img_in.bias"] = diffusers_state_dict.pop("x_embedder.bias")
+
+    # double transformer blocks
+    for i in range(num_layers):
+        block_prefix = f"transformer_blocks.{i}."
+        # norms
+        bfl_state_dict[f"double_blocks.{i}.img_mod.lin.weight"] = diffusers_state_dict.pop(
+            f"{block_prefix}norm1.linear.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.img_mod.lin.bias"] = diffusers_state_dict.pop(
+            f"{block_prefix}norm1.linear.bias"
+        )
+        bfl_state_dict[f"double_blocks.{i}.txt_mod.lin.weight"] = diffusers_state_dict.pop(
+            f"{block_prefix}norm1_context.linear.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.txt_mod.lin.bias"] = diffusers_state_dict.pop(
+            f"{block_prefix}norm1_context.linear.bias"
+        )
+        # Q, K, V
+        sample_q = diffusers_state_dict.pop(f"{block_prefix}attn.to_q.weight")
+        sample_q_bias = diffusers_state_dict.pop(f"{block_prefix}attn.to_q.bias")
+        sample_k = diffusers_state_dict.pop(f"{block_prefix}attn.to_k.weight")
+        sample_k_bias = diffusers_state_dict.pop(f"{block_prefix}attn.to_k.bias")
+        sample_v = diffusers_state_dict.pop(f"{block_prefix}attn.to_v.weight")
+        sample_v_bias = diffusers_state_dict.pop(f"{block_prefix}attn.to_v.bias")
+        context_q = diffusers_state_dict.pop(f"{block_prefix}attn.add_q_proj.weight")
+        context_q_bias = diffusers_state_dict.pop(f"{block_prefix}attn.add_q_proj.bias")
+        context_k = diffusers_state_dict.pop(f"{block_prefix}attn.add_k_proj.weight")
+        context_k_bias = diffusers_state_dict.pop(f"{block_prefix}attn.add_k_proj.bias")
+        context_v = diffusers_state_dict.pop(f"{block_prefix}attn.add_v_proj.weight")
+        context_v_bias = diffusers_state_dict.pop(f"{block_prefix}attn.add_v_proj.bias")
+        bfl_state_dict[f"double_blocks.{i}.img_attn.qkv.weight"] = torch.cat([sample_q, sample_k, sample_v], dim=0)
+        bfl_state_dict[f"double_blocks.{i}.img_attn.qkv.bias"] = torch.cat([sample_q_bias, sample_k_bias, sample_v_bias], dim=0)
+        bfl_state_dict[f"double_blocks.{i}.txt_attn.qkv.weight"] = torch.cat([context_q, context_k, context_v], dim=0)
+        bfl_state_dict[f"double_blocks.{i}.txt_attn.qkv.bias"] = torch.cat([context_q_bias, context_k_bias, context_v_bias], dim=0)
+        # qk_norm
+        bfl_state_dict[f"double_blocks.{i}.img_attn.norm.query_norm.scale"] = diffusers_state_dict.pop(
+            f"{block_prefix}attn.norm_q.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.img_attn.norm.key_norm.scale"] = diffusers_state_dict.pop(
+            f"{block_prefix}attn.norm_k.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.txt_attn.norm.query_norm.scale"] = diffusers_state_dict.pop(
+            f"{block_prefix}attn.norm_added_q.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.txt_attn.norm.key_norm.scale"] = diffusers_state_dict.pop(
+            f"{block_prefix}attn.norm_added_k.weight"
+        )
+        # ff img_mlp
+        bfl_state_dict[f"double_blocks.{i}.img_mlp.0.weight"] = diffusers_state_dict.pop(
+            f"{block_prefix}ff.net.0.proj.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.img_mlp.0.bias"] = diffusers_state_dict.pop(
+            f"{block_prefix}ff.net.0.proj.bias"
+        )
+        bfl_state_dict[f"double_blocks.{i}.img_mlp.2.weight"] = diffusers_state_dict.pop(
+            f"{block_prefix}ff.net.2.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.img_mlp.2.bias"] = diffusers_state_dict.pop(
+            f"{block_prefix}ff.net.2.bias"
+        )
+        bfl_state_dict[f"double_blocks.{i}.txt_mlp.0.weight"] = diffusers_state_dict.pop(
+            f"{block_prefix}ff_context.net.0.proj.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.txt_mlp.0.bias"] = diffusers_state_dict.pop(
+            f"{block_prefix}ff_context.net.0.proj.bias"
+        )
+        bfl_state_dict[f"double_blocks.{i}.txt_mlp.2.weight"] = diffusers_state_dict.pop(
+            f"{block_prefix}ff_context.net.2.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.txt_mlp.2.bias"] = diffusers_state_dict.pop(
+            f"{block_prefix}ff_context.net.2.bias"
+        )
+        # output projections
+        bfl_state_dict[f"double_blocks.{i}.img_attn.proj.weight"] = diffusers_state_dict.pop(
+            f"{block_prefix}attn.to_out.0.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.img_attn.proj.bias"] = diffusers_state_dict.pop(
+            f"{block_prefix}attn.to_out.0.bias"
+        )
+        bfl_state_dict[f"double_blocks.{i}.txt_attn.proj.weight"] = diffusers_state_dict.pop(
+            f"{block_prefix}attn.to_add_out.weight"
+        )
+        bfl_state_dict[f"double_blocks.{i}.txt_attn.proj.bias"] = diffusers_state_dict.pop(
+            f"{block_prefix}attn.to_add_out.bias"
+        )
+
+    # single transformer blocks
+    for i in range(num_single_layers):
+        block_prefix = f"single_transformer_blocks.{i}."
+        bfl_state_dict[f"single_blocks.{i}.modulation.lin.weight"] = diffusers_state_dict.pop(
+            f"{block_prefix}norm.linear.weight"
+        )
+        bfl_state_dict[f"single_blocks.{i}.modulation.lin.bias"] = diffusers_state_dict.pop(
+            f"{block_prefix}norm.linear.bias"
+        )
+        mlp_hidden_dim = int(inner_dim * mlp_ratio)
+        split_size = (inner_dim, inner_dim, inner_dim, mlp_hidden_dim)
+        q = diffusers_state_dict.pop(f"{block_prefix}attn.to_q.weight")
+        q_bias = diffusers_state_dict.pop(f"{block_prefix}attn.to_q.bias")
+        k = diffusers_state_dict.pop(f"{block_prefix}attn.to_k.weight")
+        k_bias = diffusers_state_dict.pop(f"{block_prefix}attn.to_k.bias")
+        v = diffusers_state_dict.pop(f"{block_prefix}attn.to_v.weight")
+        v_bias = diffusers_state_dict.pop(f"{block_prefix}attn.to_v.bias")
+        mlp = diffusers_state_dict.pop(f"{block_prefix}proj_mlp.weight")
+        mlp_bias = diffusers_state_dict.pop(f"{block_prefix}proj_mlp.bias")
+        bfl_state_dict[f"single_blocks.{i}.linear1.weight"] = torch.cat([q, k, v, mlp], dim=0)
+        bfl_state_dict[f"single_blocks.{i}.linear1.bias"] = torch.cat([q_bias, k_bias, v_bias, mlp_bias], dim=0)
+        bfl_state_dict[f"single_blocks.{i}.norm.query_norm.scale"] = diffusers_state_dict.pop(
+            f"{block_prefix}attn.norm_q.weight"
+        )
+        bfl_state_dict[f"single_blocks.{i}.norm.key_norm.scale"] = diffusers_state_dict.pop(
+            f"{block_prefix}attn.norm_k.weight"
+        )
+        bfl_state_dict[f"single_blocks.{i}.linear2.weight"] = diffusers_state_dict.pop(
+            f"{block_prefix}proj_out.weight"
+        )
+        bfl_state_dict[f"single_blocks.{i}.linear2.bias"] = diffusers_state_dict.pop(
+            f"{block_prefix}proj_out.bias"
+        )
+
+    # final layer
+    bfl_state_dict["final_layer.linear.weight"] = diffusers_state_dict.pop("proj_out.weight")
+    bfl_state_dict["final_layer.linear.bias"] = diffusers_state_dict.pop("proj_out.bias")
+
+    # AdaLayerNormContinuous swap scale/shift back
+    def unswap_scale_shift(weight):
+        scale, shift = weight.chunk(2, dim=0)
+        return torch.cat([shift, scale], dim=0)
+
+    bfl_state_dict["final_layer.adaLN_modulation.1.weight"] = unswap_scale_shift(
+        diffusers_state_dict.pop("norm_out.linear.weight")
+    )
+    bfl_state_dict["final_layer.adaLN_modulation.1.bias"] = unswap_scale_shift(
+        diffusers_state_dict.pop("norm_out.linear.bias")
+    )
+
+    return bfl_state_dict
