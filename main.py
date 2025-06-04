@@ -807,6 +807,7 @@ def main():
         optimizer=optimizer,
         num_warmup_steps=num_warmup_steps_for_scheduler,
         num_training_steps=num_training_steps_for_scheduler,
+        last_epoch=start_epoch-1,
     )
 
     transformer, optimizer, dataloader, lr_scheduler = accelerator.prepare(transformer, optimizer, dataloader, lr_scheduler)
