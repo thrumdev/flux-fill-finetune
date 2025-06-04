@@ -879,7 +879,7 @@ def main():
 
     # Always save a final checkpoint at the end
     if accelerator.is_main_process:
-        save_checkpoint(transformer, optimizer, end_epoch-1, checkpoint_dir="checkpoints", max_checkpoints=args.max_checkpoints)
+        save_checkpoint(transformer, optimizer, end_epoch, checkpoint_dir="checkpoints", max_checkpoints=args.max_checkpoints)
     wandb.finish()
 
 if __name__ == "__main__":
