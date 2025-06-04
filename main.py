@@ -203,7 +203,6 @@ def get_trainable_params(model, patterns):
     if isinstance(patterns, str):
         patterns = [patterns]
 
-    print("Selecting trainable parameters:")
     param_name_to_param = dict(model.named_parameters())
     trainable_param_names = set()
     for pattern in patterns:
@@ -211,11 +210,24 @@ def get_trainable_params(model, patterns):
         for name in param_name_to_param:
             if regex.fullmatch(name) or regex.search(name):
                 trainable_param_names.add(name)
-                print(f"\ttraining {name}")
     trainable_params = [param for name, param in param_name_to_param.items() if name in trainable_param_names]
     if not trainable_params:
         raise ValueError(f"No trainable parameters matched the provided regex(es): {patterns}")
     return trainable_params
+
+def set_trainable_params(model, trainable_params):
+    """
+    Set the requires_grad attribute of parameters matching any of the provided regex patterns to True.
+    """
+    for param in model.parameters():
+        param.requires_grad = False  # Disable all by default
+    for param in trainable_params:
+        param.requires_grad = True  # Enable only the selected ones
+
+def print_trainable_params(model):
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"Training parameter: {name}")
     
 class DummyTransformer(torch.nn.Module):
     def __init__(self, dtype=torch.float32):
@@ -824,9 +836,6 @@ def main():
     # Spatial means that the LPIPS loss will be computed per-pixel
     pipeline.lpips_loss = lpips.LPIPS(net='vgg', spatial=False).to(accelerator.device)
 
-    # Select trainable parameters using regexes from args.trainable_params
-    trainable_params = get_trainable_params(transformer, args.trainable_params)
-
     if args.gradient_checkpointing:
         print("Enabling gradient checkpointing for transformer...")
         if hasattr(transformer, 'enable_gradient_checkpointing'):
@@ -844,6 +853,9 @@ def main():
     val_dataset = FluxFillDataset(os.path.join('data', 'validation'))
     val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=collate_fn)
 
+    trainable_params = get_trainable_params(transformer, args.trainable_params)
+    set_trainable_params(transformer, trainable_params)
+
     optimizer = torch.optim.AdamW(
         trainable_params,
         lr=args.lr,
@@ -856,6 +868,8 @@ def main():
         start_epoch = load_checkpoint(transformer, optimizer, args.restore_from_checkpoint, args.restore_optimizer)
         print(f"Resuming training from epoch {start_epoch}")
 
+    print_trainable_params(transformer)
+        
     num_warmup_steps_for_scheduler = args.lr_warmup_steps * accelerator.num_processes
     len_train_dataloader_after_sharding = math.ceil(len(dataloader) / accelerator.num_processes)
     num_update_steps_per_epoch = math.ceil(len_train_dataloader_after_sharding / args.gradient_accumulation_steps)
@@ -908,7 +922,6 @@ def main():
                 accelerator.backward(loss["loss"])
                 # Only step optimizer and zero grad when gradients are synced (i.e., after accumulation)
                 if accelerator.sync_gradients:
-                    torch.cuda.empty_cache()  # Clear cache to avoid OOM errors
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
