@@ -103,6 +103,12 @@ def get_parser():
         default=1.0,
         help='Scale factor (between 0 and 1, default 1) for Flux-Redux conditioning.'
     )
+    parser.add_argument(
+        '--image_scale_dimension',
+        type=float,
+        default=1.0,
+        help='Scale factor for image and mask dimensions (must be nonzero, default: 1.0). 1.0 = no scaling, 0.5 = half size, 2.0 = double size.'
+    )
     return parser
 
 def parse_args_with_config():
@@ -154,7 +160,8 @@ def enable_lpips_gradient_checkpointing(lpips_model):
     return lpips_model
 
 class FluxFillDataset(Dataset):
-    def __init__(self, root_dir):
+
+    def __init__(self, root_dir, image_scale_dimension=1.0):
         self.root_dir = root_dir
         self.images_dir = os.path.join(root_dir, 'images')
         self.masks_dir = os.path.join(root_dir, 'masks')
@@ -163,6 +170,9 @@ class FluxFillDataset(Dataset):
         # Assume all images are numbered and have the same base name in all folders
         self.ids = [f.split('.')[0] for f in os.listdir(self.images_dir) if not f.startswith('.')]
         self.ids.sort()
+        if image_scale_dimension == 0.0:
+            raise ValueError("--image_scale_dimension must be nonzero.")
+        self.image_scale_dimension = image_scale_dimension
 
     def __len__(self):
         return len(self.ids)
@@ -172,12 +182,17 @@ class FluxFillDataset(Dataset):
         # Load image
         img_path = os.path.join(self.images_dir, f"{id_}.png")
         image = Image.open(img_path).convert('RGB')
-        image = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0  # (C, H, W), float32
-        image = image 
-
-        # Load mask
         mask_path = os.path.join(self.masks_dir, f"{id_}.png")
         mask = Image.open(mask_path).convert('L')
+
+        # Apply scaling if needed
+        scale = self.image_scale_dimension
+        if scale != 1.0:
+            new_size = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
+            image = image.resize(new_size, resample=Image.BILINEAR)
+            mask = mask.resize(new_size, resample=Image.BILINEAR)
+
+        image = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0  # (C, H, W), float32
         mask = torch.from_numpy(np.array(mask)).unsqueeze(0).float() / 255.0  # (1, H, W), float32
         mask = mask
 
@@ -846,11 +861,11 @@ def main():
         else:
             print("Warning: transformer does not support gradient checkpointing.")
 
-    dataset = FluxFillDataset(os.path.join('data', 'training'))
+    dataset = FluxFillDataset(os.path.join('data', 'training'), image_scale_dimension=args.image_scale_dimension)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=False, collate_fn=collate_fn)
 
     # Validation dataset and dataloader
-    val_dataset = FluxFillDataset(os.path.join('data', 'validation'))
+    val_dataset = FluxFillDataset(os.path.join('data', 'validation'), image_scale_dimension=args.image_scale_dimension)
     val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=collate_fn)
 
     trainable_params = get_trainable_params(transformer, args.trainable_params)
