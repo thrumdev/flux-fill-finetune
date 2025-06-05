@@ -109,9 +109,37 @@ def get_parser():
         default=1.0,
         help='Scale factor for image and mask dimensions (must be nonzero, default: 1.0). 1.0 = no scaling, 0.5 = half size, 2.0 = double size.'
     )
+    parser.add_argument(
+        '--redux_crop_fraction',
+        type=float,
+        default=1.0,
+        help='Fraction of image (height and width) to use for redux conditioning crop (default: 1.0, range (0,1]).'
+    )
+    parser.add_argument(
+        '--redux_crop_start_points',
+        type=str,
+        nargs='+',
+        default=['0.0,0.0'],
+        help='Space-separated list of X,Y floats in [0,1] for redux crop top-left (e.g. "0.0,0.0 0.5,0.5"). At least one required.'
+    )
     return parser
 
 def parse_args_with_config():
+    # Parse redux_crop_start_points into list of tuples of floats
+    def parse_crop_points(points):
+        parsed = []
+        for p in points:
+            try:
+                x, y = map(float, p.split(','))
+                if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                    raise ValueError
+                parsed.append((x, y))
+            except Exception:
+                raise ValueError(f"Invalid redux_crop_start_point: '{p}'. Must be X,Y floats in [0,1].")
+        if not parsed:
+            raise ValueError("At least one redux_crop_start_point must be provided.")
+        return parsed
+
     parser = get_parser()
     # Parse only --config first
     args, remaining_argv = parser.parse_known_args()
@@ -125,6 +153,8 @@ def parse_args_with_config():
     parser = get_parser()
     parser.set_defaults(**defaults)
     args = parser.parse_args()
+    # Parse redux_crop_start_points
+    args.redux_crop_start_points = parse_crop_points(args.redux_crop_start_points)
     return args
 
 def enable_lpips_gradient_checkpointing(lpips_model):
@@ -254,6 +284,24 @@ class DummyTransformer(torch.nn.Module):
     def dtype(self):
         return self._dtype
     
+# --- Redux crop utility ---
+def crop_tensor(img, crop_fraction, crop_points):
+    """
+    Crop a 3D tensor (C, H, W) to a fraction of its size, starting at a random (x_frac, y_frac) from crop_points.
+    If crop_fraction >= 1.0, returns the original tensor.
+    """
+    if crop_fraction >= 1.0:
+        return img
+    _, h, w = img.shape
+    crop_h = int(h * crop_fraction)
+    crop_w = int(w * crop_fraction)
+    x_frac, y_frac = random.choice(crop_points)
+    x0 = int(x_frac * (w - crop_w))
+    y0 = int(y_frac * (h - crop_h))
+    x0 = max(0, min(x0, w - crop_w))
+    y0 = max(0, min(y0, h - crop_h))
+    return img[:, y0:y0+crop_h, x0:x0+crop_w]
+    
 MAX_VALIDATION_IMAGES = 4
 def validate(transformer, val_dataloader, accelerator, pipeline, redux_pipeline, config, epoch=-1):
     if not accelerator.is_main_process:
@@ -289,8 +337,13 @@ def validate(transformer, val_dataloader, accelerator, pipeline, redux_pipeline,
 
                 height, width = image.shape[2], image.shape[3]
                 if redux_pipeline is not None:
+                    # Crop image and mask for redux conditioning
+                    crop_fraction = getattr(config, 'redux_crop_fraction', 1.0)
+                    crop_points = getattr(config, 'redux_crop_start_points', [(0.0, 0.0)])
+                    # image/mask: (B, C, H, W) or (B, 1, H, W), but val_dataloader batch size is 1
+                    redux_img = crop_tensor(image[0], crop_fraction, crop_points).unsqueeze(0)
                     (prompt_embeds, pooled_prompt_embeds) = redux_pipeline(
-                        image.to(device=accelerator.device, dtype=weight_dtype),
+                        image=redux_img.to(device=accelerator.device, dtype=weight_dtype),
                         prompt_embeds_scale=config.flux_redux_scale,
                         pooled_prompt_embeds_scale=config.flux_redux_scale,
                         return_dict=False,
@@ -542,8 +595,13 @@ def training_step(transformer, pipeline, redux_pipeline, init_image, mask_image,
 
         use_flux_redux = random.random() < config.flux_redux_rate
         if use_flux_redux:
+            # Crop each image in the batch for redux conditioning
+            crop_fraction = getattr(config, 'redux_crop_fraction', 1.0)
+            crop_points = getattr(config, 'redux_crop_start_points', [(0.0, 0.0)])
+            batch_redux_imgs = [crop_tensor(init_image[i], crop_fraction, crop_points) for i in range(init_image.shape[0])]
+            redux_imgs = torch.stack(batch_redux_imgs, dim=0)
             (prompt_embeds, pooled_prompt_embeds) = redux_pipeline(
-                image=init_image,
+                image=redux_imgs,
                 prompt_embeds_scale=config.flux_redux_scale,
                 pooled_prompt_embeds_scale=config.flux_redux_scale,
                 return_dict=False,
